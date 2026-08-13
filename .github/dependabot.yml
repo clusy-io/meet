@@ -4,6 +4,11 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Major upgrades are reviewed intentionally because provider and UI SDK
+    # majors can change behavior even when compilation succeeds.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       production-dependencies:
         dependency-type: production
