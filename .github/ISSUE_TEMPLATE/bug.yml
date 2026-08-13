@@ -1,0 +1,28 @@
+name: Bug report
+description: Report a reproducible problem. Do not disclose vulnerabilities here.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: For security issues, follow SECURITY.md instead of opening an issue.
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Include the expected behavior and a minimal reproduction.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Commit or version
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Node version, host, browser, and calendar provider. Remove secrets and personal data.
+    validations:
+      required: true

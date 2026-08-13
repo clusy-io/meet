@@ -1,0 +1,48 @@
+{
+  "name": "@clusy/meet",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A polished, self-hosted team scheduler for Google and Microsoft calendars.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/clusy-io/meet.git"
+  },
+  "packageManager": "npm@11.12.1",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.112.3",
+    "framer-motion": "^12.34.0",
+    "googleapis": "^171.4.0",
+    "lucide-react": "^0.555.0",
+    "next": "16.3.0",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "resend": "^6.19.0",
+    "server-only": "^0.0.1",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.0",
+    "tailwindcss": "^4",
+    "typescript": "^5",
+    "vitest": "^4.1.10"
+  }
+}
