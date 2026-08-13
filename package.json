@@ -24,12 +24,12 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.3",
-    "framer-motion": "^12.34.0",
-    "googleapis": "^171.4.0",
-    "lucide-react": "^0.555.0",
+    "framer-motion": "^13.0.0",
+    "googleapis": "^174.0.1",
+    "lucide-react": "^1.31.0",
     "next": "16.3.0",
-    "react": "19.2.0",
-    "react-dom": "19.2.0",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
     "resend": "^6.19.0",
     "server-only": "^0.0.1",
     "zod": "^4.1.13"
