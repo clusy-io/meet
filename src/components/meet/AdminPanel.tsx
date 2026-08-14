@@ -234,9 +234,423 @@ export function AdminPanel() {
           onAccountDelete={handleAccountDelete}
         />
 
+        <PersonalPagesSection />
+
         <MeetingsSection />
       </div>
     </main>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Personal booking pages                                              */
+/* ------------------------------------------------------------------ */
+
+interface PersonalPage {
+  memberKey: string;
+  memberName: string;
+  url: string;
+  enabled: boolean;
+  headline: string | null;
+  blurb: string | null;
+  effective: {
+    durationMinutes: number;
+    slotStepMinutes: number;
+    windowStart: string;
+    windowEnd: string;
+    minNoticeMinutes: number;
+    horizonDays: number;
+    bookableWeekdays: number[];
+    eventTitle: string;
+  };
+  overrides: {
+    durationMinutes: number | null;
+    slotStepMinutes: number | null;
+    windowStartMin: number | null;
+    windowEndMin: number | null;
+    minNoticeMinutes: number | null;
+    horizonDays: number | null;
+    bookableWeekdays: number[] | null;
+    eventTitle: string | null;
+  };
+  slackWebhookConfigured: boolean;
+  calendarReady: boolean;
+}
+
+interface PersonalPagesResponse {
+  hostTimezone: string;
+  defaults: {
+    durationMinutes: number;
+    slotStepMinutes: number;
+    windowStart: string;
+    windowEnd: string;
+    minNoticeMinutes: number;
+    horizonDays: number;
+    eventTitle: string;
+  };
+  pages: PersonalPage[];
+}
+
+const FIELD_INPUT =
+  "mt-1.5 w-full rounded-md border border-hairline bg-paper px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-hairline-strong";
+const FIELD_LABEL = "text-xs font-medium text-ink-mute";
+
+/**
+ * One booking page per person (/meet/ju, ...), folded away like the calendar
+ * wiring because it is set-up-once configuration rather than daily traffic.
+ * Placed after the calendar section on purpose: connect a calendar, then turn
+ * the page on.
+ */
+function PersonalPagesSection() {
+  const [open, setOpen] = useState(false);
+  const [phase, setPhase] = useState<"loading" | "ready" | "failed">("loading");
+  const [data, setData] = useState<PersonalPagesResponse | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/meet/admin/pages", { cache: "no-store" })
+      .then((res) => (res.ok ? (res.json() as Promise<PersonalPagesResponse>) : null))
+      .then((json) => {
+        if (cancelled) return;
+        if (json) {
+          setData(json);
+          setPhase("ready");
+        } else {
+          setPhase("failed");
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setPhase("failed");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Patch in place rather than refetching, matching how account edits settle.
+  const applyPatch = (memberKey: string, patch: Partial<PersonalPage>) => {
+    setData((prev) =>
+      prev
+        ? {
+            ...prev,
+            pages: prev.pages.map((p) => (p.memberKey === memberKey ? { ...p, ...patch } : p)),
+          }
+        : prev
+    );
+  };
+
+  const live = data?.pages.filter((p) => p.enabled) ?? [];
+  const blind = live.filter((p) => !p.calendarReady);
+
+  return (
+    <section className="mt-8 rounded-lg border border-hairline bg-paper-raise">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((prev) => !prev)}
+        className="flex w-full items-center gap-2 px-5 py-4 text-left"
+      >
+        <ChevronDown
+          size={16}
+          strokeWidth={1.5}
+          className={`shrink-0 text-ink-faint transition-transform ${open ? "" : "-rotate-90"}`}
+        />
+        <span className="text-base font-medium">Personal pages</span>
+        <span className="ml-auto truncate pl-3 text-sm text-ink-mute">
+          {phase === "ready" && data
+            ? `${live.length} of ${data.pages.length} live`
+            : phase === "failed"
+              ? "unavailable"
+              : "loading"}
+          {blind.length > 0 && (
+            <span className="text-status-warn">
+              {" "}
+              · no calendar for {blind.map((p) => p.memberName).join(", ")}
+            </span>
+          )}
+        </span>
+      </button>
+      {open && (
+        <div className="space-y-5 rounded-b-lg border-t border-hairline bg-paper p-5">
+          {phase === "failed" && (
+            <p className="text-sm text-status-warn">Could not load the personal pages.</p>
+          )}
+          {phase === "loading" && <p className="text-sm text-ink-mute">Loading…</p>}
+          {phase === "ready" &&
+            data?.pages.map((page) => (
+              <PersonalPageCard
+                key={page.memberKey}
+                page={page}
+                defaults={data.defaults}
+                hostTimezone={data.hostTimezone}
+                onPatched={applyPatch}
+              />
+            ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PersonalPageCard({
+  page,
+  defaults,
+  hostTimezone,
+  onPatched,
+}: {
+  page: PersonalPage;
+  defaults: PersonalPagesResponse["defaults"];
+  hostTimezone: string;
+  onPatched: (memberKey: string, patch: Partial<PersonalPage>) => void;
+}) {
+  const [headline, setHeadline] = useState(page.headline ?? "");
+  const [blurb, setBlurb] = useState(page.blurb ?? "");
+  const [duration, setDuration] = useState(
+    page.overrides.durationMinutes === null ? "" : String(page.overrides.durationMinutes)
+  );
+  const [windowStart, setWindowStart] = useState(
+    page.overrides.windowStartMin === null ? "" : page.effective.windowStart
+  );
+  const [windowEnd, setWindowEnd] = useState(
+    page.overrides.windowEndMin === null ? "" : page.effective.windowEnd
+  );
+  const [minNotice, setMinNotice] = useState(
+    page.overrides.minNoticeMinutes === null ? "" : String(page.overrides.minNoticeMinutes)
+  );
+  const [eventTitle, setEventTitle] = useState(page.overrides.eventTitle ?? "");
+  const [slackWebhook, setSlackWebhook] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  /** "" means "inherit"; the field is sent as null to clear the override. */
+  const numberOrNull = (value: string): number | null | undefined => {
+    const trimmed = value.trim();
+    if (trimmed === "") return null;
+    const n = Number(trimmed);
+    return Number.isInteger(n) ? n : undefined;
+  };
+
+  const save = async (extra: Record<string, unknown> = {}) => {
+    setSaving(true);
+    setError(null);
+    setNote(null);
+    const duration_ = numberOrNull(duration);
+    const minNotice_ = numberOrNull(minNotice);
+    if (duration_ === undefined || minNotice_ === undefined) {
+      setSaving(false);
+      setError("Length and notice must be whole numbers of minutes.");
+      return;
+    }
+    const body: Record<string, unknown> = {
+      headline: headline.trim() || null,
+      blurb: blurb.trim() || null,
+      durationMinutes: duration_,
+      windowStart: windowStart.trim() || null,
+      windowEnd: windowEnd.trim() || null,
+      minNoticeMinutes: minNotice_,
+      eventTitle: eventTitle.trim() || null,
+      ...extra,
+    };
+    // Only send the webhook when the admin actually typed one: an empty box
+    // must not silently clear a stored webhook on an unrelated save.
+    if (slackWebhook.trim()) body.slackWebhookUrl = slackWebhook.trim();
+
+    try {
+      const res = await fetch(`/api/meet/admin/pages/${encodeURIComponent(page.memberKey)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const json = (await res.json().catch(() => null)) as { message?: string } | null;
+      if (!res.ok) {
+        setError(json?.message ?? "Could not save.");
+        return;
+      }
+      const patch: Partial<PersonalPage> = {
+        headline: headline.trim() || null,
+        blurb: blurb.trim() || null,
+      };
+      if (typeof extra.enabled === "boolean") patch.enabled = extra.enabled;
+      if (slackWebhook.trim()) patch.slackWebhookConfigured = true;
+      if (extra.slackWebhookUrl === null) patch.slackWebhookConfigured = false;
+      onPatched(page.memberKey, patch);
+      setSlackWebhook("");
+      setNote("Saved");
+      window.setTimeout(() => setNote(null), 2000);
+    } catch {
+      setError("Could not save.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-hairline bg-paper-raise p-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="text-base font-medium">{page.memberName}</span>
+        <a
+          href={`/${page.memberKey}`}
+          target="_blank"
+          rel="noreferrer"
+          className={ROW_LINK}
+        >
+          /{page.memberKey}
+        </a>
+        {!page.calendarReady && (
+          <span className={`${CHIP} text-status-warn`}>no calendar connected</span>
+        )}
+        <label className="ml-auto flex items-center gap-2 text-sm text-ink-soft">
+          <input
+            type="checkbox"
+            className="accent-accent"
+            checked={page.enabled}
+            disabled={saving}
+            onChange={(e) => void save({ enabled: e.target.checked })}
+          />
+          Live
+        </label>
+      </div>
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <div className="sm:col-span-2">
+          <label className={FIELD_LABEL} htmlFor={`headline-${page.memberKey}`}>
+            Heading
+          </label>
+          <input
+            id={`headline-${page.memberKey}`}
+            className={FIELD_INPUT}
+            value={headline}
+            placeholder={page.memberName}
+            onChange={(e) => setHeadline(e.target.value)}
+          />
+        </div>
+        <div className="sm:col-span-2">
+          <label className={FIELD_LABEL} htmlFor={`blurb-${page.memberKey}`}>
+            Subheading
+          </label>
+          <input
+            id={`blurb-${page.memberKey}`}
+            className={FIELD_INPUT}
+            value={blurb}
+            placeholder="Optional line under the heading"
+            onChange={(e) => setBlurb(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className={FIELD_LABEL} htmlFor={`duration-${page.memberKey}`}>
+            Length (minutes)
+          </label>
+          <input
+            id={`duration-${page.memberKey}`}
+            className={FIELD_INPUT}
+            inputMode="numeric"
+            value={duration}
+            placeholder={String(defaults.durationMinutes)}
+            onChange={(e) => setDuration(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className={FIELD_LABEL} htmlFor={`notice-${page.memberKey}`}>
+            Minimum notice (minutes)
+          </label>
+          <input
+            id={`notice-${page.memberKey}`}
+            className={FIELD_INPUT}
+            inputMode="numeric"
+            value={minNotice}
+            placeholder={String(defaults.minNoticeMinutes)}
+            onChange={(e) => setMinNotice(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className={FIELD_LABEL} htmlFor={`start-${page.memberKey}`}>
+            Opens ({hostTimezone.replaceAll("_", " ")})
+          </label>
+          <input
+            id={`start-${page.memberKey}`}
+            className={FIELD_INPUT}
+            value={windowStart}
+            placeholder={defaults.windowStart}
+            onChange={(e) => setWindowStart(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className={FIELD_LABEL} htmlFor={`end-${page.memberKey}`}>
+            Closes
+          </label>
+          <input
+            id={`end-${page.memberKey}`}
+            className={FIELD_INPUT}
+            value={windowEnd}
+            placeholder={defaults.windowEnd}
+            onChange={(e) => setWindowEnd(e.target.value)}
+          />
+        </div>
+        <div className="sm:col-span-2">
+          <label className={FIELD_LABEL} htmlFor={`title-${page.memberKey}`}>
+            Calendar event title
+          </label>
+          <input
+            id={`title-${page.memberKey}`}
+            className={FIELD_INPUT}
+            value={eventTitle}
+            placeholder={defaults.eventTitle}
+            onChange={(e) => setEventTitle(e.target.value)}
+          />
+          <p className="mt-1 text-xs text-ink-faint">
+            {"{name}"} is replaced with the booker&apos;s name.
+          </p>
+        </div>
+        <div className="sm:col-span-2">
+          <label className={FIELD_LABEL} htmlFor={`slack-${page.memberKey}`}>
+            Slack webhook
+          </label>
+          <input
+            id={`slack-${page.memberKey}`}
+            className={FIELD_INPUT}
+            type="password"
+            autoComplete="off"
+            value={slackWebhook}
+            placeholder={
+              page.slackWebhookConfigured
+                ? "configured — type a new URL to replace it"
+                : "https://hooks.slack.com/services/…"
+            }
+            onChange={(e) => setSlackWebhook(e.target.value)}
+          />
+          <p className="mt-1 text-xs text-ink-faint">
+            Where this page&apos;s bookings are posted. Empty uses the team channel.
+            {page.slackWebhookConfigured && (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  className="underline decoration-hairline-strong underline-offset-2"
+                  disabled={saving}
+                  onClick={() => void save({ slackWebhookUrl: null })}
+                >
+                  Clear
+                </button>
+              </>
+            )}
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-4 flex items-center gap-3">
+        <button
+          type="button"
+          className={PRIMARY_BUTTON}
+          disabled={saving}
+          onClick={() => void save()}
+        >
+          {saving ? "Saving…" : "Save"}
+        </button>
+        {note && <span className="text-sm text-status-ok">{note}</span>}
+        {error && <span className="text-sm text-status-warn">{error}</span>}
+      </div>
+    </div>
   );
 }
 

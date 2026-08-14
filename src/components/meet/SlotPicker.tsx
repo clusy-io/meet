@@ -66,9 +66,9 @@ function focusWhenVisible(selector: string, attempts = 0): void {
     // the display:none responsive twin, but an exiting popLayout child also
     // has boxes: framer pins it position:absolute and splices it back at its
     // old index, so it precedes the entering panel in document order. Focusing
-    // it puts the caret on a node framer unmounts half a second later, dropping
-    // focus to <body> — and until then, Enter re-selects a time on the day the
-    // visitor has just left.
+    // it put the caret on a node that framer unmounted half a second later,
+    // dropping focus to <body> — and until then, Enter re-selected a time on
+    // the day the visitor had just left.
     (element) => element.getClientRects().length > 0 && !element.closest("[data-motion-pop-id]")
   );
   if (target) {
@@ -143,6 +143,8 @@ export function SlotPicker(props: {
   formSlot?: ReactNode;
   /** Called when the visitor asks to change the chosen time (or date). */
   onClearSlot?: () => void;
+  /** Personal page slug: availability comes from that one person's calendar. */
+  host?: string;
 }): ReactElement {
   const {
     onSelect,
@@ -153,10 +155,14 @@ export function SlotPicker(props: {
     selectedSlot = null,
     formSlot = null,
     onClearSlot,
+    host,
   } = props;
 
   const [attempt, setAttempt] = useState(0);
-  const requestKey = `${manageToken ?? "public"}:${attempt}`;
+  // The host belongs in the key: it gates which in-flight response is allowed
+  // into state, and without it the four pages are indistinguishable to the
+  // load-state machine, so a slow team response could land on a personal page.
+  const requestKey = `${host ?? "team"}:${manageToken ?? "public"}:${attempt}`;
   const [loadState, setLoadState] = useState<AvailabilityLoadState>({
     requestKey,
     status: "loading",
@@ -182,12 +188,15 @@ export function SlotPicker(props: {
 
   useEffect(() => {
     let cancelled = false;
-    const url = manageToken
-      ? `/api/meet/availability?token=${encodeURIComponent(manageToken)}`
+    const query = new URLSearchParams();
+    if (manageToken) query.set("token", manageToken);
+    if (host) query.set("host", host);
+    const url = query.size > 0
+      ? `/api/meet/availability?${query.toString()}`
       : "/api/meet/availability";
     fetch(url)
       .then((res) => {
-        if (manageToken && res.status === 404) {
+        if ((manageToken || host) && res.status === 404) {
           if (!cancelled) setLoadState({ requestKey, status: "not-found" });
           return null;
         }
@@ -203,7 +212,7 @@ export function SlotPicker(props: {
     return () => {
       cancelled = true;
     };
-  }, [manageToken, requestKey]);
+  }, [host, manageToken, requestKey]);
 
   const currentLoad = loadState.requestKey === requestKey ? loadState : null;
   const data = currentLoad?.status === "ready" ? currentLoad.data : null;
@@ -274,11 +283,12 @@ export function SlotPicker(props: {
   }, [selectedSlot, slotsByDay]);
   // Fall back to the picked day whenever the chosen instant no longer resolves,
   // rather than only when nothing was chosen. The live min-notice clock retires
-  // slots as their boundary passes, and a day's earliest slot is the one that
-  // timer is armed for: keying this off `selectedSlot` meant that when it aged
-  // out mid-form, `selectedDay` went null and the day went with it, collapsing
-  // the picker to its opening state and losing the visitor's half-filled form
-  // with no explanation. Their day survives now; only the retired time goes.
+  // slots as their boundary passes, and the earliest slot of the day is the one
+  // that timer is armed for: keying this off `selectedSlot` meant that when it
+  // aged out mid-form, `selectedDay` went null, the day went with it, and the
+  // whole picker collapsed to its opening state — losing the visitor's place
+  // and their half-filled form with no explanation. Their day survives now;
+  // only the retired time goes.
   const candidateDay = selectedDay ?? pickedDay;
   const activeDay =
     candidateDay && (slotsByDay.get(candidateDay)?.length ?? 0) > 0 ? candidateDay : null;
@@ -372,8 +382,8 @@ export function SlotPicker(props: {
   // `selectedDay`, not `selectedSlot`: selectedDay is null once the chosen
   // instant is no longer among the live slots, which is what happens when the
   // min-notice clock retires it mid-form. Closing the form then drops the
-  // visitor back to that day's remaining times rather than leaving a form open
-  // on a time the server would refuse.
+  // visitor back to that day's remaining times — their day and their place are
+  // kept — instead of leaving a form open on a time the server would refuse.
   const formOpen = selectedDay !== null && formSlot !== null && activeDay !== null;
   const expanded = activeDay !== null;
   const spring = reducedMotion
@@ -513,6 +523,49 @@ export function SlotPicker(props: {
   // Quiet text buttons, no per-chip borders: the whole grid reads as one
   // typographic block. Keyed by day so switching dates re-runs the stagger
   // inside a panel frame that never moves.
+  /**
+   * The slim column is a fresh scroll container that mounts at scrollTop 0,
+   * so a time picked further down the day (7:30pm out of an 08:30-22:00 list)
+   * would sit below the fold and the visitor would see no selection at all
+   * next to a form that claims one.
+   *
+   * A callback ref rather than an effect, for two reasons: it runs during
+   * commit, BEFORE framer measures for the layoutId ink pill, so the pill
+   * animates to the chip's final on-screen position instead of chasing a
+   * scroll that happens afterwards; and it fires per mounted copy, which
+   * matters because the mobile and desktop trees are both mounted.
+   * Assigning scrollTop (not scrollIntoView) keeps the jump instant and
+   * contained: scrollIntoView can scroll ancestors and move the whole page.
+   */
+  const revealChosenTime = (list: HTMLDivElement | null): void => {
+    if (!list || !selectedSlot) return;
+    const chosen = list.querySelector<HTMLElement>('[data-meet-time][aria-pressed="true"]');
+    // Nothing to reveal yet. Return WITHOUT recording, so a later attach still
+    // gets its chance; recording here would mark the selection handled and the
+    // reveal would never happen.
+    if (!chosen) return;
+
+    // React detaches and re-attaches a callback ref on EVERY render, because
+    // this function is a new identity each time. Without this guard the reveal
+    // re-ran on renders the visitor never caused — typing one character into
+    // the guest form yanked a column they had deliberately scrolled
+    // (measured: 400 -> 0).
+    if (revealedRef.current.get(list) === selectedSlot) return;
+    revealedRef.current.set(list, selectedSlot);
+
+    const c = chosen.getBoundingClientRect();
+    const l = list.getBoundingClientRect();
+    // Already whole: leave the list exactly where it is. This also covers the
+    // hidden responsive twin, whose rects are all zero.
+    if (c.top >= l.top - 1 && c.bottom <= l.bottom + 1) return;
+    // Centre using rect deltas, never offsetTop. offsetTop is measured from the
+    // nearest POSITIONED ancestor, which is not this scroll container, so the
+    // two live in different coordinate spaces; they agreed only until framer
+    // re-parented the panel during the month transition.
+    const delta = c.top - l.top;
+    list.scrollTop = Math.max(0, list.scrollTop + delta - (l.height - c.height) / 2);
+  };
+
   const renderTimesWide = () => (
     <div key={`wide-${activeDay}`}>
       <p className="mb-3 hidden text-sm font-medium text-ink sm:block">
@@ -540,48 +593,6 @@ export function SlotPicker(props: {
       </div>
     </div>
   );
-
-  /**
-   * Bring the chosen time into view inside the slim column.
-   *
-   * The column is a fresh scroll container that mounts at scrollTop 0, so a
-   * time picked further down the day would sit below the fold and the visitor
-   * would see no selection at all next to a form claiming one.
-   *
-   * A callback ref rather than an effect, deliberately: it runs during commit,
-   * BEFORE framer measures for the layoutId ink pill, so the pill animates to
-   * the chip's final on-screen position instead of chasing a scroll applied
-   * afterwards, and it fires per mounted copy, which matters because the mobile
-   * and desktop trees are both mounted.
-   */
-  const revealChosenTime = (list: HTMLDivElement | null): void => {
-    if (!list || !selectedSlot) return;
-    const chosen = list.querySelector<HTMLElement>('[data-meet-time][aria-pressed="true"]');
-    // Nothing to reveal yet. Return WITHOUT recording, so a later attach still
-    // gets its chance; recording here would mark the selection handled and the
-    // reveal would never happen.
-    if (!chosen) return;
-
-    // React detaches and re-attaches a callback ref on EVERY render, because
-    // this function is a new identity each time. Without this guard the reveal
-    // re-runs on renders the visitor never caused — typing one character into
-    // the guest form yanked a column they had deliberately scrolled.
-    if (revealedRef.current.get(list) === selectedSlot) return;
-    revealedRef.current.set(list, selectedSlot);
-
-    const c = chosen.getBoundingClientRect();
-    const l = list.getBoundingClientRect();
-    // Already whole: leave the list exactly where it is. This also covers the
-    // hidden responsive twin, whose rects are all zero.
-    if (c.top >= l.top - 1 && c.bottom <= l.bottom + 1) return;
-    // Centre using rect deltas, never offsetTop. offsetTop is measured from the
-    // nearest POSITIONED ancestor, which is not this scroll container, so the
-    // two live in different coordinate spaces; they agree only until framer
-    // re-parents the panel during a month transition, at which point the same
-    // expression points a row away.
-    const delta = c.top - l.top;
-    list.scrollTop = Math.max(0, list.scrollTop + delta - (l.height - c.height) / 2);
-  };
 
   const renderTimesSlim = (prefix: string) => (
     <div key={`slim-${activeDay}`}>

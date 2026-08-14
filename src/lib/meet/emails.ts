@@ -1,6 +1,6 @@
 import "server-only";
 import { Resend } from "resend";
-import { getMeetConfig } from "./config";
+import { getMeetConfig, type MeetConfig } from "./config";
 import { buildIcs } from "./ics";
 import type { Booking, Member } from "./types";
 
@@ -167,6 +167,49 @@ export function teamRecipients(members: Member[]): string[] {
   return [...seen];
 }
 
+/**
+ * Who gets the internal copy for THIS booking.
+ *
+ * The team page tells every member. A personal page tells only its owner: a
+ * call booked on one person's page is theirs, and fanning it out to everyone
+ * is exactly the noise personal pages exist to avoid.
+ *
+ * Every lifecycle mail routes through here rather than calling
+ * teamRecipients(config.members) directly, because that reads the GLOBAL
+ * roster and ignores the `members` argument its callers pass — narrowing at
+ * the call sites would change only the body's "Attending" row while still
+ * mailing everyone, and every existing test would stay green.
+ *
+ * An unresolvable page key falls back to the whole team: a booking must never
+ * go unannounced.
+ */
+function noticeRecipients(config: MeetConfig, booking: Booking): string[] {
+  if (!booking.pageKey) return teamRecipients(config.members);
+  const host = config.members.find((m) => m.key === booking.pageKey);
+  return teamRecipients(host ? [host] : config.members);
+}
+
+/** The member whose personal page took this booking, if any. */
+function pageHost(config: MeetConfig, booking: Booking): Member | undefined {
+  if (!booking.pageKey) return undefined;
+  return config.members.find((m) => m.key === booking.pageKey);
+}
+
+/**
+ * Who the booker is meeting, in their confirmation: the team for the team
+ * page, that person's name for a personal one.
+ */
+function withLabel(config: MeetConfig, booking: Booking, capitalized: boolean): string {
+  const host = pageHost(config, booking);
+  if (host) return host.name;
+  return `${capitalized ? "The" : "the"} ${config.brandName} team`;
+}
+
+/** Where "book another time" sends them: back to the page they came from. */
+function bookAgainUrl(config: MeetConfig, booking: Booking): string {
+  return booking.pageKey ? `${config.siteOrigin}/${booking.pageKey}` : config.siteOrigin;
+}
+
 async function deliver(resend: Resend, from: string, mail: OutboundEmail): Promise<void> {
   const { error } = await resend.emails.send({
     from,
@@ -223,7 +266,7 @@ export async function sendBookingConfirmed(
       : `No video link is available yet. Contact the ${escapeHtml(config.brandName)} team for joining details.`;
     const whereText =
       booking.meetingUrl ??
-      `No video link is available yet. Contact the ${config.brandName} team for joining details.`;
+      `No video link is available yet. Contact ${withLabel(config, booking, false)} for joining details.`;
 
     const booker: OutboundEmail = {
       to: [booking.email],
@@ -238,7 +281,7 @@ export async function sendBookingConfirmed(
               mutedLine(escapeHtml(hostTimeLabel(whenHost, config.hostTimezone)))
           ) +
           row("Where", whereHtml) +
-          row("With", `The ${escapeHtml(config.brandName)} team`) +
+          row("With", escapeHtml(withLabel(config, booking, true))) +
           (booking.guests.length > 0
             ? row("Guests", booking.guests.map(escapeHtml).join("<br/>"))
             : "") +
@@ -251,7 +294,7 @@ export async function sendBookingConfirmed(
         `When: ${whenLocal}`,
         hostTimeLabel(whenHost, config.hostTimezone),
         `Where: ${whereText}`,
-        `With: the ${config.brandName} team`,
+        `With: ${withLabel(config, booking, false)}`,
         "",
         "Need to change it? Reschedule or cancel:",
         manageUrl,
@@ -262,7 +305,7 @@ export async function sendBookingConfirmed(
     const attendingNames = attending.map((m) => m.name).join(", ");
     const notesHtml = booking.notes ? escapeHtml(booking.notes).replace(/\n/g, "<br/>") : "None";
     const team: OutboundEmail = {
-      to: teamRecipients(config.members),
+      to: noticeRecipients(config, booking),
       replyTo: booking.email,
       subject: `New booking: ${booking.name}, ${whenHost}`,
       html: shell(
@@ -334,7 +377,7 @@ export async function sendBookingCancelled(booking: Booking, members: Member[]):
     const whenLocal = formatWhen(booking.startAt, booking.timezone);
     const whenHost = formatWhen(booking.startAt, config.hostTimezone);
     const attachments = [{ filename: "invite.ics", content: Buffer.from(buildIcs(booking, "CANCEL")) }];
-    const bookUrl = config.siteOrigin;
+    const bookUrl = bookAgainUrl(config, booking);
 
     const booker: OutboundEmail = {
       to: [booking.email],
@@ -358,7 +401,7 @@ export async function sendBookingCancelled(booking: Booking, members: Member[]):
 
     const attendingNames = attending.map((m) => m.name).join(", ");
     const team: OutboundEmail = {
-      to: teamRecipients(config.members),
+      to: noticeRecipients(config, booking),
       replyTo: booking.email,
       subject: `Cancelled: ${booking.name}, ${whenHost}`,
       html: shell(
@@ -405,7 +448,7 @@ export async function sendBookingRescheduled(
       : `No video link is available yet. Contact the ${escapeHtml(config.brandName)} team for joining details.`;
     const whereText =
       booking.meetingUrl ??
-      `No video link is available yet. Contact the ${config.brandName} team for joining details.`;
+      `No video link is available yet. Contact ${withLabel(config, booking, false)} for joining details.`;
 
     const booker: OutboundEmail = {
       to: [booking.email],
@@ -421,7 +464,7 @@ export async function sendBookingRescheduled(
               mutedLine(`Previously ${escapeHtml(prevLocal)}`)
           ) +
           row("Where", whereHtml) +
-          row("With", `The ${escapeHtml(config.brandName)} team`) +
+          row("With", escapeHtml(withLabel(config, booking, true))) +
           manageBlock(manageUrl)
       ),
       text: [
@@ -432,7 +475,7 @@ export async function sendBookingRescheduled(
         hostTimeLabel(whenHost, config.hostTimezone),
         `Previously ${prevLocal}`,
         `Where: ${whereText}`,
-        `With: the ${config.brandName} team`,
+        `With: ${withLabel(config, booking, false)}`,
         "",
         "Need to change it? Reschedule or cancel:",
         manageUrl,
@@ -442,7 +485,7 @@ export async function sendBookingRescheduled(
 
     const attendingNames = attending.map((m) => m.name).join(", ");
     const team: OutboundEmail = {
-      to: teamRecipients(config.members),
+      to: noticeRecipients(config, booking),
       replyTo: booking.email,
       subject: `Rescheduled: ${booking.name}, ${whenHost}`,
       html: shell(
@@ -490,7 +533,7 @@ export async function sendBookingReminder(
       : `No video link is on file. Contact the ${escapeHtml(config.brandName)} team for joining details.`;
     const whereText =
       booking.meetingUrl ??
-      `No video link is on file. Contact the ${config.brandName} team for joining details.`;
+      `No video link is on file. Contact ${withLabel(config, booking, false)} for joining details.`;
 
     const booker: OutboundEmail = {
       to: [booking.email],
@@ -523,7 +566,7 @@ export async function sendBookingReminder(
 
     const attendingNames = attending.map((m) => m.name).join(", ");
     const team: OutboundEmail = {
-      to: teamRecipients(config.members),
+      to: noticeRecipients(config, booking),
       replyTo: booking.email,
       subject: `Reminder: ${booking.name} ${phrase}, ${formatShortDate(booking.startAt, config.hostTimezone)}`,
       html: shell(

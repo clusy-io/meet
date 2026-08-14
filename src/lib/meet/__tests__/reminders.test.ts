@@ -8,6 +8,7 @@ const H = 3_600_000;
 function booking(overrides: Partial<Booking> = {}): Booking {
   return {
     id: "b1",
+    pageKey: "",
     startAt: new Date(START).toISOString(),
     endAt: new Date(START + 30 * 60_000).toISOString(),
     durationMinutes: 30,

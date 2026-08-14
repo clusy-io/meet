@@ -46,6 +46,44 @@ export interface CalendarAccount {
   updatedAt: string;
 }
 
+/**
+ * Stored overrides for one person's page (/<memberKey>).
+ *
+ * Every field except `memberKey` and `enabled` is nullable and means "inherit
+ * the global value": a page persists only what its owner actually changed, so
+ * raising the team-wide window raises theirs too. A member with no row at all
+ * is a live page on fully inherited settings.
+ */
+export interface PageSettings {
+  memberKey: string;
+  enabled: boolean;
+  /** Page heading; defaults to the member's name. */
+  headline: string | null;
+  /** One-line subheading under the heading. */
+  blurb: string | null;
+  windowStartMin: number | null;
+  windowEndMin: number | null;
+  bookableWeekdays: number[] | null;
+  durationMinutes: number | null;
+  slotStepMinutes: number | null;
+  minNoticeMinutes: number | null;
+  horizonDays: number | null;
+  eventTitle: string | null;
+  eventDescription: string | null;
+  /**
+   * Slack Incoming Webhook for this page, AES-256-GCM encrypted at rest.
+   * Null falls back to the team-wide webhook.
+   */
+  slackWebhookEnc: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Admin-facing view: the webhook is reported as present/absent, never echoed. */
+export type PageSettingsView = Omit<PageSettings, "slackWebhookEnc"> & {
+  slackWebhookSet: boolean;
+};
+
 /** Half-open UTC interval [start, end) in epoch milliseconds. */
 export interface BusyInterval {
   startMs: number;
@@ -64,6 +102,13 @@ export interface BookingEventRef {
 
 export interface Booking {
   id: string;
+  /**
+   * Which page took this booking: "" for the team page, or a member key for
+   * that person's page (/<key>). Decides who is invited, who is emailed, and
+   * which members the slot consumes. Required, not optional, so every
+   * construction site has to state its intent.
+   */
+  pageKey: string;
   /** UTC ISO instants. */
   startAt: string;
   endAt: string;
@@ -199,6 +244,8 @@ export interface AvailabilityResponse {
 /** POST /api/meet/bookings */
 export interface CreateBookingRequest {
   start: string; // UTC ISO, must equal a currently-available slot start
+  /** Member key of the personal page this came from; omitted = team page. */
+  host?: string;
   name: string;
   email: string;
   notes?: string;
@@ -211,6 +258,13 @@ export interface CreateBookingRequest {
 
 export interface BookingView {
   id: string;
+  /** Personal page this came from, "" for the team page. */
+  pageKey: string;
+  /**
+   * Display name of the person this call is with, or null for a team booking.
+   * Resolved server-side so the manage page does not need the member roster.
+   */
+  hostName: string | null;
   startAt: string;
   endAt: string;
   durationMinutes: number;

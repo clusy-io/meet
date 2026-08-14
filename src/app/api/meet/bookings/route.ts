@@ -9,6 +9,10 @@ export const dynamic = "force-dynamic";
 
 const bodySchema = z.object({
   start: z.string().min(1, "A start time is required."),
+  // Must be declared: z.object() strips unknown keys, so an undeclared `host`
+  // would be dropped in silence and every personal booking would be filed as
+  // a team booking with no error to notice.
+  host: z.string().trim().min(1).max(64).optional(),
   name: z.string().trim().min(1, "A name is required.").max(120, "Name is too long."),
   email: z.email("A valid email address is required."),
   notes: z.string().max(2000, "Notes are too long.").optional(),

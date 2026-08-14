@@ -63,12 +63,17 @@ export function candidateSlots(
  *   connected accounts are treated as always free only when
  *   `treatUnconnectedAsFree` — the availability service decides).
  * @param nowMs injectable clock for tests.
+ * @param quorum how many members must be free; defaults to the config value.
+ *   Personal pages pass 1 rather than handing in a mutated config, because
+ *   getMeetConfig() returns one memoized object shared by every request on the
+ *   lambda and writing to it would change the team page's quorum process-wide.
  */
 export function availableSlots(
   config: MeetConfig,
   candidates: SlotCandidate[],
   memberBusy: Map<string, BusyInterval[]>,
-  nowMs: number
+  nowMs: number,
+  quorum: number = config.quorum
 ): Array<{ startMs: number; freeMemberKeys: string[] }> {
   const minStartMs = nowMs + config.minNoticeMinutes * 60_000;
   // Horizon: last bookable civil day in host tz is today + horizonDays.
@@ -96,7 +101,7 @@ export function availableSlots(
     for (const [memberKey, busy] of memberBusy) {
       if (!overlapsBusy(busy, slot.startMs, slot.endMs)) free.push(memberKey);
     }
-    if (free.length >= config.quorum) {
+    if (free.length >= quorum) {
       out.push({ startMs: slot.startMs, freeMemberKeys: free });
     }
   }

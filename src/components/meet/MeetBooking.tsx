@@ -8,9 +8,13 @@ import { SlotPicker } from "@/components/meet/SlotPicker";
 import { SITE } from "@/meet.config";
 
 /**
- * The public booking flow: pick a slot, leave your details, get confirmed.
+ * The /meet booking flow: pick a slot, leave your details, get confirmed.
  * All server interaction lives in SlotPicker (availability) and BookingForm
  * (the booking POST); this component only sequences the three steps.
+ *
+ * Passing `host` turns it into one person's page (/meet/ju): availability and
+ * the booking both carry that slug, so only that calendar decides and only
+ * that person is invited. Without it, this is the team page.
  */
 
 type Step = "pick" | "done";
@@ -46,7 +50,16 @@ function focusNameWhenVisible(attempts = 0): void {
   }
 }
 
-export default function MeetBooking() {
+export default function MeetBooking({
+  host,
+  headline,
+  blurb,
+}: {
+  /** Member key of the personal page; omitted renders the team page. */
+  host?: string;
+  headline?: string;
+  blurb?: string | null;
+} = {}) {
   const [step, setStep] = useState<Step>("pick");
   // Owned here, not in SlotPicker, so the Back-to-times step change and the
   // post-409 picker remount preserve the visitor's chosen timezone. The same
@@ -223,6 +236,7 @@ export default function MeetBooking() {
           state={bookingFormState}
           onDone={handleDone}
           onSlotTaken={handleSlotTaken}
+          host={host}
         />
       </div>
     </div>
@@ -231,8 +245,11 @@ export default function MeetBooking() {
   return (
     <section className="w-full max-w-5xl">
       <h1 className="text-center font-serif-display text-3xl font-bold tracking-tight text-ink sm:text-4xl">
-        {SITE.bookingTitle}
+        {headline ?? SITE.bookingTitle}
       </h1>
+      {blurb ? (
+        <p className="mx-auto mt-3 max-w-xl text-center text-sm text-ink-mute">{blurb}</p>
+      ) : null}
 
       {notice ? (
         <p
@@ -247,6 +264,7 @@ export default function MeetBooking() {
       <div className="mt-8">
         <SlotPicker
           key={pickerKey}
+          host={host}
           onSelect={handleSelect}
           timezone={timezone}
           onTimezoneChange={setTimezone}

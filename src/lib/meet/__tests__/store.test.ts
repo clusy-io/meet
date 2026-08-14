@@ -9,6 +9,7 @@ function makeBooking(overrides: Partial<Booking> = {}): Booking {
   seq += 1;
   return {
     id: `bk-${seq}`,
+    pageKey: "",
     startAt: "2026-08-20T15:30:00.000Z",
     endAt: "2026-08-20T16:00:00.000Z",
     durationMinutes: 30,
