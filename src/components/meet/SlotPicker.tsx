@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactElement, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import {
@@ -62,10 +62,20 @@ const CALENDAR_DAY_FMT = new Intl.DateTimeFormat("en-US", {
 
 function focusWhenVisible(selector: string, attempts = 0): void {
   const target = [...document.querySelectorAll<HTMLElement>(selector)].find(
-    (element) => element.getClientRects().length > 0
+    // Generating boxes is not enough to be the LIVE copy. It correctly rejects
+    // the display:none responsive twin, but an exiting popLayout child also
+    // has boxes: framer pins it position:absolute and splices it back at its
+    // old index, so it precedes the entering panel in document order. Focusing
+    // it puts the caret on a node framer unmounts half a second later, dropping
+    // focus to <body> — and until then, Enter re-selects a time on the day the
+    // visitor has just left.
+    (element) => element.getClientRects().length > 0 && !element.closest("[data-motion-pop-id]")
   );
   if (target) {
-    target.focus();
+    // preventScroll: focus() otherwise scrolls ancestors to reveal the target,
+    // measured one frame into the entrance spring, so it lands short of where
+    // the panel settles and nothing closes the gap.
+    target.focus({ preventScroll: true });
     return;
   }
   if (attempts < 60) {
@@ -163,6 +173,12 @@ export function SlotPicker(props: {
 
   // Live clock used to retire a slot at the exact minimum-notice boundary.
   const [nowMs, setNowMs] = useState(() => Date.now());
+  // Which selection each time column has already been scrolled to reveal, so
+  // the reveal is idempotent per selection rather than per render. Keyed BY
+  // NODE: the mobile and desktop columns are both mounted and both call the
+  // ref, so a single slot of memory would let them clobber each other's entry
+  // and re-run the reveal on every render anyway.
+  const revealedRef = useRef(new WeakMap<HTMLElement, string>());
 
   useEffect(() => {
     let cancelled = false;
@@ -256,7 +272,14 @@ export function SlotPicker(props: {
     }
     return null;
   }, [selectedSlot, slotsByDay]);
-  const candidateDay = selectedSlot ? selectedDay : pickedDay;
+  // Fall back to the picked day whenever the chosen instant no longer resolves,
+  // rather than only when nothing was chosen. The live min-notice clock retires
+  // slots as their boundary passes, and a day's earliest slot is the one that
+  // timer is armed for: keying this off `selectedSlot` meant that when it aged
+  // out mid-form, `selectedDay` went null and the day went with it, collapsing
+  // the picker to its opening state and losing the visitor's half-filled form
+  // with no explanation. Their day survives now; only the retired time goes.
+  const candidateDay = selectedDay ?? pickedDay;
   const activeDay =
     candidateDay && (slotsByDay.get(candidateDay)?.length ?? 0) > 0 ? candidateDay : null;
   const activeSlots = activeDay ? (slotsByDay.get(activeDay) ?? []) : [];
@@ -346,7 +369,12 @@ export function SlotPicker(props: {
     );
   }
 
-  const formOpen = selectedSlot !== null && formSlot !== null && activeDay !== null;
+  // `selectedDay`, not `selectedSlot`: selectedDay is null once the chosen
+  // instant is no longer among the live slots, which is what happens when the
+  // min-notice clock retires it mid-form. Closing the form then drops the
+  // visitor back to that day's remaining times rather than leaving a form open
+  // on a time the server would refuse.
+  const formOpen = selectedDay !== null && formSlot !== null && activeDay !== null;
   const expanded = activeDay !== null;
   const spring = reducedMotion
     ? { duration: 0 }
@@ -513,12 +541,57 @@ export function SlotPicker(props: {
     </div>
   );
 
+  /**
+   * Bring the chosen time into view inside the slim column.
+   *
+   * The column is a fresh scroll container that mounts at scrollTop 0, so a
+   * time picked further down the day would sit below the fold and the visitor
+   * would see no selection at all next to a form claiming one.
+   *
+   * A callback ref rather than an effect, deliberately: it runs during commit,
+   * BEFORE framer measures for the layoutId ink pill, so the pill animates to
+   * the chip's final on-screen position instead of chasing a scroll applied
+   * afterwards, and it fires per mounted copy, which matters because the mobile
+   * and desktop trees are both mounted.
+   */
+  const revealChosenTime = (list: HTMLDivElement | null): void => {
+    if (!list || !selectedSlot) return;
+    const chosen = list.querySelector<HTMLElement>('[data-meet-time][aria-pressed="true"]');
+    // Nothing to reveal yet. Return WITHOUT recording, so a later attach still
+    // gets its chance; recording here would mark the selection handled and the
+    // reveal would never happen.
+    if (!chosen) return;
+
+    // React detaches and re-attaches a callback ref on EVERY render, because
+    // this function is a new identity each time. Without this guard the reveal
+    // re-runs on renders the visitor never caused — typing one character into
+    // the guest form yanked a column they had deliberately scrolled.
+    if (revealedRef.current.get(list) === selectedSlot) return;
+    revealedRef.current.set(list, selectedSlot);
+
+    const c = chosen.getBoundingClientRect();
+    const l = list.getBoundingClientRect();
+    // Already whole: leave the list exactly where it is. This also covers the
+    // hidden responsive twin, whose rects are all zero.
+    if (c.top >= l.top - 1 && c.bottom <= l.bottom + 1) return;
+    // Centre using rect deltas, never offsetTop. offsetTop is measured from the
+    // nearest POSITIONED ancestor, which is not this scroll container, so the
+    // two live in different coordinate spaces; they agree only until framer
+    // re-parents the panel during a month transition, at which point the same
+    // expression points a row away.
+    const delta = c.top - l.top;
+    list.scrollTop = Math.max(0, list.scrollTop + delta - (l.height - c.height) / 2);
+  };
+
   const renderTimesSlim = (prefix: string) => (
     <div key={`slim-${activeDay}`}>
       <p className="mb-3 text-sm font-medium text-ink">
         {activeDay ? shortDayFmt.format(Date.parse(activeSlots[0] ?? selectedSlot ?? "")) : ""}
       </p>
-      <div className="flex max-h-[420px] flex-col gap-0.5 overflow-y-auto pr-1">
+      <div
+        ref={revealChosenTime}
+        className="flex max-h-[420px] flex-col gap-0.5 overflow-y-auto pr-1"
+      >
         {activeSlots.map((iso) => {
           const isChosen = iso === selectedSlot;
           return (
