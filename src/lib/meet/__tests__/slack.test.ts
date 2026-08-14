@@ -10,9 +10,11 @@ import {
 } from "@/lib/meet/slack";
 
 const HOOK = "https://hooks.slack.com/services/T00000000/B00000000/abcdefghijklmnopqrst";
-// Real-shaped values the payload must never carry, so the containment
-// assertions below have something that could actually appear.
-const MANAGE_TOKEN = "Lz1zY79ulWCeDJaoFKS9x2Qm";
+// Values the payload must never carry. Deliberately NOT shaped like a real
+// credential: a high-entropy string here is indistinguishable from a leaked
+// secret to any scanner reading the repo, and the assertions only need a
+// distinctive string to look for, not a realistic one.
+const MANAGE_TOKEN = "manage-token-fixture-never-a-real-token";
 const BOOKER_EMAIL = "dana@example.com";
 
 const EVENT: MeetingSlackEvent = {
