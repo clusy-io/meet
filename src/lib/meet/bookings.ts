@@ -503,7 +503,13 @@ export async function rescheduleBooking(
     return invalid("This booking was cancelled and cannot be rescheduled.");
   }
 
-  const validated = validateSlotStart(config, req.start, req.timezone);
+  // The page's own window and duration, exactly as createBooking does. Keying
+  // this off the global config made a personal page with its own duration
+  // reject the very slots its picker had just offered.
+  const reschedulePage = booking.pageKey ? await getPage(booking.pageKey) : null;
+  const effective = reschedulePage ? reschedulePage.config : config;
+
+  const validated = validateSlotStart(effective, req.start, req.timezone);
   if (!validated.ok) return validated;
   const { startMs } = validated;
 

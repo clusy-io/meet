@@ -58,6 +58,7 @@ export async function GET(request: Request) {
           horizonDays: page.config.horizonDays,
           bookableWeekdays: page.config.bookableWeekdays,
           eventTitle: page.config.eventTitle,
+          eventDescription: page.config.eventDescription,
         },
         // Which of those are this page's own, so the form can distinguish an
         // override from an inherited value.
@@ -70,6 +71,7 @@ export async function GET(request: Request) {
           horizonDays: stored?.horizonDays ?? null,
           bookableWeekdays: stored?.bookableWeekdays ?? null,
           eventTitle: stored?.eventTitle ?? null,
+          eventDescription: stored?.eventDescription ?? null,
         },
         // Presence only. The webhook is a live posting credential; neither it
         // nor its ciphertext leaves the server, exactly like refresh tokens.

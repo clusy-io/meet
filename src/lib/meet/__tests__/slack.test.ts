@@ -10,6 +10,10 @@ import {
 } from "@/lib/meet/slack";
 
 const HOOK = "https://hooks.slack.com/services/T00000000/B00000000/abcdefghijklmnopqrst";
+// Real-shaped values the payload must never carry, so the containment
+// assertions below have something that could actually appear.
+const MANAGE_TOKEN = "Lz1zY79ulWCeDJaoFKS9x2Qm";
+const BOOKER_EMAIL = "dana@example.com";
 
 const EVENT: MeetingSlackEvent = {
   bookingId: "booking-1",
@@ -182,8 +186,12 @@ describe("payload", () => {
       "secret"
     );
     const blob = JSON.stringify(payload);
-    expect(blob).not.toContain("/meet/manage");
-    expect(blob).not.toContain("super-secret");
+    // Assert against values that are genuinely in play: a fixture with no
+    // manage token cannot fail a "no manage token" assertion, which is how the
+    // first version of this test passed while proving nothing.
+    expect(blob).not.toContain(MANAGE_TOKEN);
+    expect(blob).not.toContain("/manage/");
+    expect(blob).not.toContain(BOOKER_EMAIL);
     expect(blob).not.toContain(EVENT.bookingId);
     expect(blob).not.toMatch(/[\w.]+@[\w.]+/);
   });
