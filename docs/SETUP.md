@@ -12,6 +12,12 @@ and adds newer guest/reminder columns with explicit additive migrations.
 Keep `SUPABASE_SERVICE_ROLE_KEY` server-only. The schema intentionally grants
 no browser policy; all access goes through authenticated server routes.
 
+Re-running `docs/schema.sql` is the upgrade path for an existing installation.
+It is additive and idempotent, and it repairs its own constraints: the
+booking-overlap constraint is checked by definition rather than by name, so an
+installation created before per-person pages is upgraded in place instead of
+silently keeping the older, global version.
+
 ## 2. Google OAuth
 
 Create a Web application in Google Cloud and configure:
@@ -65,6 +71,8 @@ Start from `.env.example`, leave `MEET_MOCK_MODE` empty, and set:
 | `CRON_SECRET` | Bearer secret for the reminder worker |
 | `SUPABASE_URL` | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Server-only database credential |
+| `MEET_SLACK_WEBHOOK_URL` | Optional. Slack Incoming Webhook for booking notices |
+| `MEET_SLACK_ENABLED_AT` | Optional. Canonical ISO-Z instant; the on switch, and the cutoff before which nothing is announced |
 
 Generate secrets independently:
 
@@ -87,6 +95,33 @@ with `Authorization: Bearer $CRON_SECRET`.
 Open `/admin`, sign in, connect each account, and select every calendar that
 should count as busy. A selected calendar affects availability; the provider's
 primary calendar is used for event creation.
+
+Then open **Personal pages**. Every member of `MEET_MEMBERS` has a page at their
+key (`/ada`), live by default and running on the team-wide settings. Anything
+you leave blank there keeps inheriting, so you only need to fill in what differs
+for that person: their hours, meeting length, notice, heading, event title, or
+their own Slack webhook. Switching a page off makes it 404 for visitors while
+keeping it visible here.
+
+A page whose owner has no readable calendar can only ever show an empty month,
+so the section warns about that rather than letting you publish a dead page.
+
+### Slack (optional)
+
+Create an Incoming Webhook at <https://api.slack.com/apps>, then set both
+`MEET_SLACK_WEBHOOK_URL` and `MEET_SLACK_ENABLED_AT`. Both are required: the
+webhook alone does nothing, which lets you store and check it before anything
+can post.
+
+`MEET_SLACK_ENABLED_AT` is a canonical ISO-Z instant (`2026-08-14T03:00:00Z`)
+and doubles as a cutoff, so switching Slack on never announces bookings that
+already existed. Cancellations are exempt, since a call still on the calendar
+changing right now is worth hearing about.
+
+Nothing is sent unless `NODE_ENV=production`, so previews and local development
+stay silent even if a webhook is copied into them. If you set the variables in
+your host's dashboard after a build, redeploy: environment added afterwards is
+not in that build.
 
 Do not provide production secrets to untrusted preview code. Give previews an
 isolated database and OAuth clients, or run them only in mock mode.
