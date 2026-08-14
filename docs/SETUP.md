@@ -6,7 +6,7 @@ This guide configures a standalone Meet deployment at an origin such as
 ## 1. Database
 
 Create a Supabase project and run [`schema.sql`](schema.sql) in its SQL editor.
-The script creates `meet_accounts` and `meet_bookings`, enables RLS,
+The script creates `meet_accounts` and `meet_bookings`, `meet_page_settings`, enables RLS,
 and adds newer guest/reminder columns with explicit additive migrations.
 
 Keep `SUPABASE_SERVICE_ROLE_KEY` server-only. The schema intentionally grants

@@ -60,7 +60,7 @@ export interface MeetPage {
  * must not be able to produce a config that makes candidateSlots loop forever
  * or offer slots the booking path will then reject.
  */
-function configForPage(
+export function configForPage(
   base: MeetConfig,
   member: Member,
   settings: PageSettings | null
@@ -96,8 +96,11 @@ function configForPage(
 
   // The step drives the slot grid; below the duration it would offer
   // overlapping slots, which the booking-time check would then reject.
+  // Clamp rather than skip. Skipping left the INHERITED step in place, so a
+  // page that lengthened its meetings past the team-wide step (45 minutes on a
+  // 30-minute grid) got overlapping slots offered and then refused at booking.
   const step = settings.slotStepMinutes ?? base.slotStepMinutes;
-  if (step >= config.durationMinutes) config.slotStepMinutes = step;
+  config.slotStepMinutes = Math.max(step, config.durationMinutes);
 
   if (settings.minNoticeMinutes !== null && settings.minNoticeMinutes >= 0) {
     config.minNoticeMinutes = settings.minNoticeMinutes;

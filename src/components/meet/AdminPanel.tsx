@@ -262,6 +262,7 @@ interface PersonalPage {
     horizonDays: number;
     bookableWeekdays: number[];
     eventTitle: string;
+    eventDescription: string;
   };
   overrides: {
     durationMinutes: number | null;
@@ -272,6 +273,7 @@ interface PersonalPage {
     horizonDays: number | null;
     bookableWeekdays: number[] | null;
     eventTitle: string | null;
+    eventDescription: string | null;
   };
   slackWebhookConfigured: boolean;
   calendarReady: boolean;
@@ -418,6 +420,12 @@ function PersonalPageCard({
     page.overrides.minNoticeMinutes === null ? "" : String(page.overrides.minNoticeMinutes)
   );
   const [eventTitle, setEventTitle] = useState(page.overrides.eventTitle ?? "");
+  const [slotStep, setSlotStep] = useState(
+    page.overrides.slotStepMinutes === null ? "" : String(page.overrides.slotStepMinutes)
+  );
+  const [horizon, setHorizon] = useState(
+    page.overrides.horizonDays === null ? "" : String(page.overrides.horizonDays)
+  );
   const [slackWebhook, setSlackWebhook] = useState("");
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -437,9 +445,16 @@ function PersonalPageCard({
     setNote(null);
     const duration_ = numberOrNull(duration);
     const minNotice_ = numberOrNull(minNotice);
-    if (duration_ === undefined || minNotice_ === undefined) {
+    const slotStep_ = numberOrNull(slotStep);
+    const horizon_ = numberOrNull(horizon);
+    if (
+      duration_ === undefined ||
+      minNotice_ === undefined ||
+      slotStep_ === undefined ||
+      horizon_ === undefined
+    ) {
       setSaving(false);
-      setError("Length and notice must be whole numbers of minutes.");
+      setError("Length, gap, notice and horizon must be whole numbers.");
       return;
     }
     const body: Record<string, unknown> = {
@@ -449,6 +464,8 @@ function PersonalPageCard({
       windowStart: windowStart.trim() || null,
       windowEnd: windowEnd.trim() || null,
       minNoticeMinutes: minNotice_,
+      slotStepMinutes: slotStep_,
+      horizonDays: horizon_,
       eventTitle: eventTitle.trim() || null,
       ...extra,
     };
@@ -548,6 +565,32 @@ function PersonalPageCard({
             value={duration}
             placeholder={String(defaults.durationMinutes)}
             onChange={(e) => setDuration(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className={FIELD_LABEL} htmlFor={`step-${page.memberKey}`}>
+            Gap between slots (minutes)
+          </label>
+          <input
+            id={`step-${page.memberKey}`}
+            className={FIELD_INPUT}
+            inputMode="numeric"
+            value={slotStep}
+            placeholder={String(defaults.slotStepMinutes)}
+            onChange={(e) => setSlotStep(e.target.value)}
+          />
+        </div>
+        <div>
+          <label className={FIELD_LABEL} htmlFor={`horizon-${page.memberKey}`}>
+            Booking horizon (days)
+          </label>
+          <input
+            id={`horizon-${page.memberKey}`}
+            className={FIELD_INPUT}
+            inputMode="numeric"
+            value={horizon}
+            placeholder={String(defaults.horizonDays)}
+            onChange={(e) => setHorizon(e.target.value)}
           />
         </div>
         <div>

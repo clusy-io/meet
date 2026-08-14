@@ -8,8 +8,8 @@ const mocks = vi.hoisted(() => ({
   config: {
     hostTimezone: "America/Los_Angeles",
     members: [
-      { key: "ju", name: "Ju", email: "ju@example.com" },
-      { key: "eldar", name: "Eldar", email: "eldar@example.com" },
+      { key: "ada", name: "Ada", email: "ada@example.com" },
+      { key: "sam", name: "Sam", email: "sam@example.com" },
     ],
   },
 }));
@@ -24,7 +24,7 @@ vi.mock("@/lib/meet/slack", () => ({
 import { notifyBookingSlack } from "@/lib/meet/slackNotify";
 
 const TEAM_HOOK = "https://hooks.slack.com/services/T0/B0/team";
-const JU_HOOK = "https://hooks.slack.com/services/T0/B0/ju";
+const ADA_HOOK = "https://hooks.slack.com/services/T0/B0/ju";
 const ENABLED_AT = Date.parse("2026-08-13T00:00:00Z");
 
 function booking(overrides: Partial<Booking> = {}): Booking {
@@ -38,7 +38,7 @@ function booking(overrides: Partial<Booking> = {}): Booking {
     email: "booker@example.com",
     notes: null,
     timezone: "America/Los_Angeles",
-    attendeeMemberKeys: ["ju"],
+    attendeeMemberKeys: ["ada"],
     guests: [],
     eventRefs: [],
     meetingUrl: null,
@@ -62,7 +62,7 @@ beforeEach(() => {
     referenceSecret: "secret",
   });
   mocks.webhookForPage.mockImplementation(async (pageKey: string, fallback: string) =>
-    pageKey === "ju" ? JU_HOOK : fallback
+    pageKey === "ada" ? ADA_HOOK : fallback
   );
   mocks.post.mockResolvedValue({ ok: true });
 });
@@ -77,10 +77,10 @@ describe("notifyBookingSlack", () => {
   });
 
   it("routes a personal booking to that page's webhook and names the host", async () => {
-    await notifyBookingSlack(booking({ pageKey: "ju" }), "confirmed");
+    await notifyBookingSlack(booking({ pageKey: "ada" }), "confirmed");
     const [url, event] = mocks.post.mock.calls[0];
-    expect(url).toBe(JU_HOOK);
-    expect(event).toMatchObject({ hostName: "Ju" });
+    expect(url).toBe(ADA_HOOK);
+    expect(event).toMatchObject({ hostName: "Ada" });
   });
 
   it("carries the previous time on a reschedule", async () => {
@@ -123,6 +123,6 @@ describe("notifyBookingSlack", () => {
 
   it("never throws when webhook resolution blows up", async () => {
     mocks.webhookForPage.mockRejectedValue(new Error("db down"));
-    await expect(notifyBookingSlack(booking({ pageKey: "ju" }), "1h")).resolves.toBeUndefined();
+    await expect(notifyBookingSlack(booking({ pageKey: "ada" }), "1h")).resolves.toBeUndefined();
   });
 });

@@ -27,20 +27,39 @@ if (!BASE) {
 }
 
 function chromePath() {
-  const root = `${process.env.HOME}/Library/Caches/ms-playwright`;
-  const dir = fs
-    .readdirSync(root)
-    .filter((d) => d.startsWith("chromium-"))
-    .sort((a, b) => Number(b.split("-")[1]) - Number(a.split("-")[1]))[0];
-  for (const rel of [
+  // Respect an explicit override first, then try the per-platform Playwright
+  // cache roots. Hardcoding the macOS path made this crash for everyone else.
+  if (process.env.PLAYWRIGHT_CHROMIUM_PATH) return process.env.PLAYWRIGHT_CHROMIUM_PATH;
+  const roots = [
+    process.env.PLAYWRIGHT_BROWSERS_PATH,
+    `${process.env.HOME}/Library/Caches/ms-playwright`,
+    `${process.env.HOME}/.cache/ms-playwright`,
+    process.env.LOCALAPPDATA ? `${process.env.LOCALAPPDATA}/ms-playwright` : null,
+  ].filter(Boolean);
+  const rels = [
     "chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+    "chrome-mac/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
     "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
     "chrome-linux/chrome",
-  ]) {
-    const p = `${root}/${dir}/${rel}`;
-    if (fs.existsSync(p)) return p;
+    "chrome-win/chrome.exe",
+  ];
+  for (const root of roots) {
+    if (!fs.existsSync(root)) continue;
+    const dirs = fs
+      .readdirSync(root)
+      .filter((d) => d.startsWith("chromium-"))
+      .sort((a, b) => Number(b.split("-")[1]) - Number(a.split("-")[1]));
+    for (const dir of dirs) {
+      for (const rel of rels) {
+        const p = `${root}/${dir}/${rel}`;
+        if (fs.existsSync(p)) return p;
+      }
+    }
   }
-  throw new Error("no chromium build found under ~/Library/Caches/ms-playwright");
+  throw new Error(
+    "no Chromium build found. Run: npx playwright install chromium\n" +
+      "or point PLAYWRIGHT_CHROMIUM_PATH at an existing browser binary."
+  );
 }
 
 /** Geometry of the live time column, measured the way a visitor sees it. */

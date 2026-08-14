@@ -263,7 +263,7 @@ export async function sendBookingConfirmed(
 
     const whereHtml = booking.meetingUrl
       ? meetButton(booking.meetingUrl)
-      : `No video link is available yet. Contact the ${escapeHtml(config.brandName)} team for joining details.`;
+      : `No video link is available yet. Contact ${escapeHtml(withLabel(config, booking, false))} for joining details.`;
     const whereText =
       booking.meetingUrl ??
       `No video link is available yet. Contact ${withLabel(config, booking, false)} for joining details.`;
@@ -445,7 +445,7 @@ export async function sendBookingRescheduled(
 
     const whereHtml = booking.meetingUrl
       ? meetButton(booking.meetingUrl)
-      : `No video link is available yet. Contact the ${escapeHtml(config.brandName)} team for joining details.`;
+      : `No video link is available yet. Contact ${escapeHtml(withLabel(config, booking, false))} for joining details.`;
     const whereText =
       booking.meetingUrl ??
       `No video link is available yet. Contact ${withLabel(config, booking, false)} for joining details.`;
@@ -530,7 +530,7 @@ export async function sendBookingReminder(
 
     const whereHtml = booking.meetingUrl
       ? meetButton(booking.meetingUrl)
-      : `No video link is on file. Contact the ${escapeHtml(config.brandName)} team for joining details.`;
+      : `No video link is on file. Contact ${escapeHtml(withLabel(config, booking, false))} for joining details.`;
     const whereText =
       booking.meetingUrl ??
       `No video link is on file. Contact ${withLabel(config, booking, false)} for joining details.`;

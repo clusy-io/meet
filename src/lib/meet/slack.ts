@@ -6,11 +6,11 @@ import { getMeetConfig } from "./config";
 /**
  * meet — Slack notifications.
  *
- * The webhook validation, payload discipline, timeout and failure
- * classification in this file originated in an agent session's Slack work
- * (branch agent/meet-slack-updates) and are kept close to as written; the
- * at-least-once outbox that surrounded them was dropped in favour of posting
- * inline from the booking lifecycle, next to the emails.
+ * Notifications are posted inline from the booking lifecycle, next to the
+ * emails, rather than through a durable outbox. That trade is deliberate: an
+ * outbox buys at-least-once delivery at the cost of a table, a lease and a
+ * dispatcher, which is more machinery than a booking notice warrants. The
+ * consequence is that a failed post is not retried; see the README.
  *
  * Payload policy: a Slack channel is a shared surface, so the message carries
  * the event, the times, the host, who booked, the join link and a keyed
@@ -145,9 +145,10 @@ export function isValidMeetingSlackDisplayTimezone(hostTimezone: string): boolea
 
 /**
  * Fail-closed in four independent ways: mock mode is silent, any non-production
- * NODE_ENV is silent (so previews and local dev never post even if a secret
- * is copied by mistake), a webhook without an activation timestamp is off, and
- * anything malformed is "invalid" rather than a guess.
+ * non-production environment is silent, including Vercel previews (so a
+ * preview branch cannot post into the real channel even if a secret is copied
+ * into it), a webhook without an activation timestamp is off, and anything
+ * malformed is "invalid" rather than a guess.
  *
  * MEET_SLACK_ENABLED_AT doubles as the on switch and as the cutoff: nothing
  * that happened before it is ever announced.
@@ -161,11 +162,22 @@ export function getMeetingSlackSettings(): MeetingSlackSettings {
   if (rawWebhook && !rawEnabledAt) return { state: "disabled" };
   if (!rawWebhook || !rawEnabledAt) return { state: "invalid" };
   const config = getMeetConfig();
-  // NODE_ENV, not VERCEL_ENV: this template is documented as deployable to any
-  // Node host, where VERCEL_ENV is simply unset — keying off it would leave
-  // Slack silently dead while /admin reported it configured.
-  // MEET_SLACK_ENABLED_AT is already the explicit on-switch and the cutoff.
-  if (config.mockMode || process.env.NODE_ENV !== "production") {
+  // Both gates, because neither alone is right.
+  //
+  // NODE_ENV covers self-hosting: this template is documented as deployable to
+  // any Node host, where VERCEL_ENV is simply unset, and keying off VERCEL_ENV
+  // there would leave Slack silently dead while /admin reported it configured.
+  //
+  // VERCEL_ENV covers Vercel, where PREVIEW deployments also run with
+  // NODE_ENV=production. Without this second check a preview branch would post
+  // into the real channel, which is exactly what "previews stay silent" above
+  // promises it will not do.
+  const vercelEnv = process.env.VERCEL_ENV;
+  if (
+    config.mockMode ||
+    process.env.NODE_ENV !== "production" ||
+    (vercelEnv !== undefined && vercelEnv !== "production")
+  ) {
     return { state: "disabled" };
   }
   const webhookUrl = validateMeetingSlackWebhook(rawWebhook);

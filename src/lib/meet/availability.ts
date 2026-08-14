@@ -225,8 +225,8 @@ export async function computeAvailability(
     providerBusy = new Map(hit.entries);
   } else {
     // Deliberately fetches EVERY member, not just this page's owner, so the
-    // cached map stays page-independent and /meet, /meet/ju and /meet/eldar
-    // share one entry and one set of provider calls. Narrowing the fetch here
+    // cached map stays page-independent and the team page and each personal
+    // page share one entry and one set of provider calls. Narrowing it here
     // would make the cached value partial while the key (`from:days`) stayed
     // the same, and the team page would then read a map missing two founders,
     // fail quorum on every slot, and show a silent 60-second outage.
