@@ -29,6 +29,7 @@ const MEMBERS: Member[] = [
 
 const BOOKING: Booking = {
   id: "booking-id",
+  pageKey: "",
   startAt: "2026-08-20T17:00:00.000Z",
   endAt: "2026-08-20T17:30:00.000Z",
   durationMinutes: 30,

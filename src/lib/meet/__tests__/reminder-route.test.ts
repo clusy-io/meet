@@ -33,6 +33,7 @@ const NOW = START - 23 * 3_600_000;
 function booking(): Booking {
   return {
     id: "booking-1",
+    pageKey: "",
     startAt: new Date(START).toISOString(),
     endAt: new Date(START + 30 * 60_000).toISOString(),
     durationMinutes: 30,

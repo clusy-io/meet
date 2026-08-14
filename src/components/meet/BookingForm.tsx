@@ -10,7 +10,7 @@ import {
 import type { BookingView, CreateBookingRequest } from "@/lib/meet/types";
 
 /**
- * Details form for the public booking page. Owns the booking POST: 409 means the slot was
+ * Details form for /meet. Owns the booking POST: 409 means the slot was
  * taken between render and submit (surfaced via onSlotTaken so the flow can
  * drop back to the picker); other failures show the server's message inline.
  */
@@ -42,12 +42,15 @@ export function BookingForm({
   state,
   onDone,
   onSlotTaken,
+  host,
 }: {
   startIso: string;
   timezone: string;
   state: BookingFormState;
   onDone: (booking: BookingView) => void;
   onSlotTaken: () => void;
+  /** Personal page slug; omitted books the team page. */
+  host?: string;
 }): ReactElement {
   const { name, email, notes, guests, guestInput, guestError, websiteUrl, pending, error } =
     state.values;
@@ -79,6 +82,7 @@ export function BookingForm({
       email: email.trim(),
       timezone,
     };
+    if (host) body.host = host;
     const trimmedNotes = notes.trim();
     if (trimmedNotes) body.notes = trimmedNotes;
     if (guests.length > 0) body.guests = guests;

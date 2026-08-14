@@ -131,3 +131,21 @@ export function parseCivilDate(
   if (month < 1 || month > 12 || day < 1 || day > 31) return null;
   return { year, month, day };
 }
+
+/**
+ * Minutes from midnight to a clock string: 510 -> "8:30", 1320 -> "22:00".
+ * Shared by the admin routes that render the booking window.
+ */
+export function minutesToClock(minutes: number): string {
+  return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, "0")}`;
+}
+
+/** "8:30" / "08:30" -> 510. Null for anything malformed or out of range. */
+export function parseClockToMinutes(value: string): number | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+  if (!m) return null;
+  const hour = Number(m[1]);
+  const minute = Number(m[2]);
+  if (minute > 59 || hour > 24 || (hour === 24 && minute !== 0)) return null;
+  return hour * 60 + minute;
+}

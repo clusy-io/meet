@@ -99,10 +99,21 @@ async function providerBusyByMember(
 }
 
 /**
- * Busy overlay from confirmed bookings, applied to EVERY present member:
- * whoever attends, the team holds one intro call at a time. Always read
- * fresh from the DB, never cached: this is what changes at booking cadence,
- * and the DB is the only state shared across serverless instances.
+ * Busy overlay from confirmed bookings, applied to each booking's OWN
+ * attendees rather than to everyone.
+ *
+ * This used to blanket every member ("the team holds one intro call at a
+ * time"), which was harmless while /meet was the only page. With per-person
+ * pages it would mean Eldar's 3pm makes Ju's 3pm unbookable, so the overlay
+ * now follows attendeeMemberKeys — which createBooking already populates with
+ * exactly the members who are committed to the call (all free members for a
+ * team booking, the one owner for a personal booking).
+ *
+ * An EMPTY attendee list still blocks everyone: a degraded or legacy row must
+ * fail towards "unavailable", never towards invisible.
+ *
+ * Always read fresh from the DB, never cached: this is what changes at booking
+ * cadence, and the DB is the only state shared across serverless instances.
  */
 async function withBookingsOverlay(
   providerBusy: Map<string, BusyInterval[]>,
@@ -111,13 +122,14 @@ async function withBookingsOverlay(
 ): Promise<Map<string, BusyInterval[]>> {
   const bookings = await getMeetStore().listConfirmedBookingsInRange(fromMs, toMs);
   if (bookings.length === 0) return providerBusy;
-  const overlay: BusyInterval[] = bookings.map((b) => ({
-    startMs: Date.parse(b.startAt),
-    endMs: Date.parse(b.endAt),
-  }));
   const map = new Map<string, BusyInterval[]>();
   for (const [memberKey, busy] of providerBusy) {
-    map.set(memberKey, mergeBusy([...busy, ...overlay]));
+    const overlay: BusyInterval[] = bookings
+      .filter(
+        (b) => b.attendeeMemberKeys.length === 0 || b.attendeeMemberKeys.includes(memberKey)
+      )
+      .map((b) => ({ startMs: Date.parse(b.startAt), endMs: Date.parse(b.endAt) }));
+    map.set(memberKey, overlay.length === 0 ? busy : mergeBusy([...busy, ...overlay]));
   }
   return map;
 }
@@ -166,13 +178,28 @@ export function invalidateAvailabilityCache(): void {
  *
  * `requiredMemberKeys` narrows the result to slots where every listed member
  * is free (reschedule flow: the committed attendees must keep the call).
+ *
+ * `hostKey` switches to a personal page: only that member's calendar decides,
+ * and quorum stops applying. Note this is NOT the same as passing the host in
+ * `requiredMemberKeys` — that filter runs AFTER the quorum test, so it yields
+ * "the host plus one other founder free", which is a fraction of the host's
+ * real openings.
+ *
+ * `config` supplies that page's window/duration overrides; it defaults to the
+ * global config.
  */
 export async function computeAvailability(
   from: string,
   days: number,
-  requiredMemberKeys?: string[]
+  options: {
+    requiredMemberKeys?: string[];
+    hostKey?: string;
+    config?: MeetConfig;
+  } = {}
 ): Promise<AvailabilityResponse> {
-  const config = getMeetConfig();
+  const globalConfig = getMeetConfig();
+  const config = options.config ?? globalConfig;
+  const { hostKey, requiredMemberKeys } = options;
   if (config.mockMode) await ensureMockReady();
 
   const fromCivil = parseCivilDate(from);
@@ -197,7 +224,13 @@ export async function computeAvailability(
   if (hit && hit.expiresMs > nowMs) {
     providerBusy = new Map(hit.entries);
   } else {
-    providerBusy = await providerBusyByMember(config, windowFromMs, windowToMs);
+    // Deliberately fetches EVERY member, not just this page's owner, so the
+    // cached map stays page-independent and /meet, /meet/ju and /meet/eldar
+    // share one entry and one set of provider calls. Narrowing the fetch here
+    // would make the cached value partial while the key (`from:days`) stayed
+    // the same, and the team page would then read a map missing two founders,
+    // fail quorum on every slot, and show a silent 60-second outage.
+    providerBusy = await providerBusyByMember(globalConfig, windowFromMs, windowToMs);
     cache.set(cacheKey, { expiresMs: nowMs + CACHE_TTL_MS, entries: [...providerBusy] });
     if (cache.size > 64) {
       for (const [key, entry] of cache) {
@@ -206,9 +239,25 @@ export async function computeAvailability(
     }
   }
 
-  const busyMap = await withBookingsOverlay(providerBusy, windowFromMs, windowToMs);
+  const fullBusyMap = await withBookingsOverlay(providerBusy, windowFromMs, windowToMs);
+
+  // A personal page sees a map holding at most its own owner. Scoping the MAP
+  // (rather than filtering the output) is what makes quorum irrelevant, and it
+  // inherits fail-closed for free: a member whose calendars could not be read
+  // is ABSENT from the map, so the scoped map is empty, nothing reaches
+  // quorum 1, and the page shows no availability. Never read an absent member
+  // as free — that turns a revoked OAuth grant into a page that books over a
+  // full calendar.
+  let busyMap = fullBusyMap;
+  let quorum = config.quorum;
+  if (hostKey !== undefined) {
+    const hostBusy = fullBusyMap.get(hostKey);
+    busyMap = new Map(hostBusy === undefined ? [] : [[hostKey, hostBusy]]);
+    quorum = 1;
+  }
+
   const candidates = candidateSlots(config, fromCivil, days);
-  let slots = availableSlots(config, candidates, busyMap, Date.now());
+  let slots = availableSlots(config, candidates, busyMap, Date.now(), quorum);
   const required = requiredMemberKeys ? [...requiredMemberKeys] : [];
   if (required.length > 0) {
     slots = slots.filter((s) => required.every((key) => s.freeMemberKeys.includes(key)));

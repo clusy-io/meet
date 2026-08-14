@@ -3,7 +3,9 @@ import { getMeetConfig, type MeetConfig } from "./config";
 import { decryptSecret, randomToken } from "./crypto";
 import { invalidateAvailabilityCache, slotFreeMembers } from "./availability";
 import { sendBookingCancelled, sendBookingConfirmed, sendBookingRescheduled } from "./emails";
+import { getPage } from "./pages";
 import { getProvider } from "./providers";
+import { notifyBookingSlack } from "./slackNotify";
 import { candidateSlots } from "./slots";
 import { getMeetStore } from "./store";
 import { addCivilDays, utcToWall, wallToUtcMs } from "./tz";
@@ -166,7 +168,8 @@ function organizerCandidates(
 function eventAttendees(
   config: MeetConfig,
   booking: Booking,
-  organizerEmail: string
+  organizerEmail: string,
+  invitees: Member[] = config.members
 ): Array<{ email: string; name?: string }> {
   const seen = new Set<string>([organizerEmail.trim().toLowerCase()]);
   const out: Array<{ email: string; name?: string }> = [];
@@ -178,7 +181,7 @@ function eventAttendees(
   };
   push(booking.email, booking.name);
   for (const guest of booking.guests) push(guest);
-  for (const member of config.members) {
+  for (const member of invitees) {
     push(member.email, member.name);
   }
   return out;
@@ -219,23 +222,46 @@ export async function createBooking(
   if (name.length < 1 || name.length > 120) return invalid("A name is required.");
   if (!EMAIL_RE.test(email)) return invalid("A valid email address is required.");
 
-  const validated = validateSlotStart(config, req.start, req.timezone);
+  // A personal page books exactly one person against their own calendar. An
+  // unresolvable slug must NOT fall through to the team flow: that would
+  // silently book the whole team from a typo'd URL.
+  const page = req.host ? await getPage(req.host) : null;
+  if (req.host && !page) return invalid("Unknown host.");
+  if (page && !page.enabled) return invalid("That booking page is not available.");
+
+  // The page's own window, duration and grid. validateSlotStart must see the
+  // SAME config the page offered slots from, or it rejects the very slots the
+  // visitor just picked.
+  const effective = page ? page.config : config;
+
+  const validated = validateSlotStart(effective, req.start, req.timezone);
   if (!validated.ok) return validated;
   const { startMs } = validated;
 
-  const { free, quorumMet } = await slotFreeMembers(startMs);
-  if (!quorumMet) return unavailable("That time is no longer available.");
-  const attending = membersInConfigOrder(
-    config,
-    free.map((m) => m.key)
-  );
+  const { free, quorumMet } = await slotFreeMembers(startMs, effective.durationMinutes);
+  if (page) {
+    // Quorum neither implies nor is implied by "this host is free": 2 of 3 can
+    // be free with the host among the busy ones.
+    if (!free.some((m) => m.key === page.member.key)) {
+      return unavailable("That time is no longer available.");
+    }
+  } else if (!quorumMet) {
+    return unavailable("That time is no longer available.");
+  }
+  const attending = page
+    ? [page.member]
+    : membersInConfigOrder(
+        config,
+        free.map((m) => m.key)
+      );
 
   const nowIso = new Date().toISOString();
   const booking: Booking = {
     id: crypto.randomUUID(),
+    pageKey: page ? page.member.key : "",
     startAt: new Date(startMs).toISOString(),
-    endAt: new Date(startMs + config.durationMinutes * 60_000).toISOString(),
-    durationMinutes: config.durationMinutes,
+    endAt: new Date(startMs + effective.durationMinutes * 60_000).toISOString(),
+    durationMinutes: effective.durationMinutes,
     name,
     email,
     notes: req.notes?.trim() || null,
@@ -283,11 +309,18 @@ export async function createBooking(
         const calendarId = organizer.account.provider === "google" ? "primary" : "";
         const created = await provider.createEvent(refreshToken, {
           calendarId,
-          summary: config.eventTitle.split("{name}").join(booking.name),
-          description: bookingEventDescription(config, booking),
+          summary: effective.eventTitle.split("{name}").join(booking.name),
+          description: bookingEventDescription(effective, booking),
           startAt: booking.startAt,
           endAt: booking.endAt,
-          attendees: eventAttendees(config, booking, organizer.account.email),
+          // Team page keeps inviting every member, busy ones included, as an
+          // FYI they can decline. A personal page invites only its owner.
+          attendees: eventAttendees(
+            config,
+            booking,
+            organizer.account.email,
+            page ? attending : config.members
+          ),
           withConference: organizer.withConference,
         });
         const createdMeetingUrl =
@@ -370,6 +403,10 @@ export async function createBooking(
     emailOk = false;
   }
 
+  // Slack is deliberately outside the allOk roll-up: it is an announcement,
+  // not part of the booking's sync state, and notifyBookingSlack never throws.
+  await notifyBookingSlack(booking, "confirmed");
+
   const allOk = eventOk && emailOk && refsPersisted;
   booking.syncStatus = allOk ? "synced" : eventOk || emailOk ? "partial" : "failed";
   if (booking.syncStatus !== "partial") {
@@ -435,6 +472,9 @@ export async function cancelBooking(
   }
 
   const attending = membersInConfigOrder(config, booking.attendeeMemberKeys);
+  // Reached only when transitionToCancelled was won above, so an idempotent
+  // re-cancel of an already-cancelled booking posts nothing.
+  await notifyBookingSlack(booking, "cancelled");
   try {
     await sendBookingCancelled(booking, attending);
   } catch (err) {
@@ -546,6 +586,9 @@ export async function rescheduleBooking(
   }
 
   const attending = membersInConfigOrder(config, booking.attendeeMemberKeys);
+  // Strictly after the compare-and-swap: a stale reschedule that lost the race
+  // returns earlier and never reaches here.
+  await notifyBookingSlack(booking, "rescheduled", previousStartAt);
   try {
     await sendBookingRescheduled(booking, attending, previousStartAt);
   } catch (err) {
@@ -563,8 +606,15 @@ export async function rescheduleBooking(
 
 /** Public projection of a booking (what /api/meet returns to the browser). */
 export function toBookingView(b: Booking): BookingView {
+  const host = b.pageKey
+    ? getMeetConfig().members.find((m) => m.key === b.pageKey)
+    : undefined;
   return {
     id: b.id,
+    pageKey: b.pageKey,
+    // Null for a team booking, and also for a page key that no longer names a
+    // configured member, so the UI falls back to the team wording.
+    hostName: host?.name ?? null,
     startAt: b.startAt,
     endAt: b.endAt,
     durationMinutes: b.durationMinutes,

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getMeetConfig } from "@/lib/meet/config";
 import { sendBookingReminder } from "@/lib/meet/emails";
 import { dueReminderKinds, REMINDER_KINDS, reminderPhrase } from "@/lib/meet/reminders";
+import { notifyBookingSlack } from "@/lib/meet/slackNotify";
 import { getMeetStore } from "@/lib/meet/store";
 
 export const runtime = "nodejs";
@@ -37,15 +38,28 @@ export async function GET(request: Request) {
   let sent = 0;
   const failures: string[] = [];
   for (const booking of upcoming) {
+    // The roster the body resolves "Attending" against. Narrowed for a
+    // personal booking so its reminder names one person, not the whole team;
+    // the recipient list itself is decided inside emails.ts.
+    const host = booking.pageKey
+      ? config.members.find((m) => m.key === booking.pageKey)
+      : undefined;
+    const memberScope = host ? [host] : config.members;
     for (const kind of dueReminderKinds(booking, nowMs)) {
       try {
-        await sendBookingReminder(booking, config.members, kind, reminderPhrase(kind));
+        await sendBookingReminder(booking, memberScope, kind, reminderPhrase(kind));
         const recorded = await store.markReminderSent(booking.id, kind);
         if (!recorded) {
           failures.push(`${booking.id}:${kind}:state_changed`);
           continue;
         }
         sent++;
+        // After the conditional write, so a run that lost the race to another
+        // cron invocation does not double-post. notifyBookingSlack never
+        // throws, so it cannot turn a delivered reminder into a retried one.
+        if (kind === "24h" || kind === "1h") {
+          await notifyBookingSlack(booking, kind);
+        }
       } catch (err) {
         console.error(`meet: ${kind} reminder failed for booking ${booking.id}`, err);
         failures.push(`${booking.id}:${kind}`);

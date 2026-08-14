@@ -29,3 +29,7 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+
+# Agent tooling artefacts, not part of the template
+AGENTS.md
+CLAUDE.md

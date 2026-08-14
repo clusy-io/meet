@@ -100,6 +100,7 @@ function account(
 function existingBooking(): Booking {
   return {
     id: "booking-1",
+    pageKey: "",
     startAt: "2026-08-14T10:00:00.000Z",
     endAt: "2026-08-14T11:00:00.000Z",
     durationMinutes: 60,

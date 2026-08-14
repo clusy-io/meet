@@ -1,7 +1,7 @@
 import "server-only";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { getMeetConfig } from "./config";
-import type { Booking, CalendarAccount } from "./types";
+import type { Booking, CalendarAccount, PageSettings } from "./types";
 
 /**
  * clusy/meet — persistence.
@@ -27,6 +27,19 @@ export interface MeetStore {
     patch: Partial<Pick<CalendarAccount, "selectedCalendars" | "status" | "refreshTokenEnc">>
   ): Promise<void>;
   deleteAccount(id: string): Promise<void>;
+
+  /** Stored overrides for the personal booking pages, one row per member. */
+  listPageSettings(): Promise<PageSettings[]>;
+  getPageSettings(memberKey: string): Promise<PageSettings | null>;
+  /**
+   * Insert-or-update by memberKey. Fields absent from `patch` are left as they
+   * are; a field explicitly set to null clears the override and returns that
+   * setting to the global config value.
+   */
+  upsertPageSettings(
+    memberKey: string,
+    patch: Partial<Omit<PageSettings, "memberKey" | "createdAt" | "updatedAt">>
+  ): Promise<PageSettings>;
 
   /** Fails with slot_taken when a confirmed booking already holds startAt. */
   insertBooking(booking: Booking): Promise<InsertBookingResult>;
@@ -90,6 +103,7 @@ interface AccountRow {
 
 interface BookingRow {
   id: string;
+  page_key: string;
   start_at: string;
   end_at: string;
   duration_minutes: number;
@@ -110,6 +124,71 @@ interface BookingRow {
   cancelled_at: string | null;
 }
 
+interface PageSettingsRow {
+  member_key: string;
+  enabled: boolean;
+  headline: string | null;
+  blurb: string | null;
+  window_start_min: number | null;
+  window_end_min: number | null;
+  bookable_weekdays: number[] | null;
+  duration_minutes: number | null;
+  slot_step_minutes: number | null;
+  min_notice_minutes: number | null;
+  horizon_days: number | null;
+  event_title: string | null;
+  event_description: string | null;
+  slack_webhook_enc: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+function pageSettingsFromRow(r: PageSettingsRow): PageSettings {
+  return {
+    memberKey: r.member_key,
+    enabled: r.enabled,
+    headline: r.headline,
+    blurb: r.blurb,
+    windowStartMin: r.window_start_min,
+    windowEndMin: r.window_end_min,
+    bookableWeekdays: r.bookable_weekdays,
+    durationMinutes: r.duration_minutes,
+    slotStepMinutes: r.slot_step_minutes,
+    minNoticeMinutes: r.min_notice_minutes,
+    horizonDays: r.horizon_days,
+    eventTitle: r.event_title,
+    eventDescription: r.event_description,
+    slackWebhookEnc: r.slack_webhook_enc,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+}
+
+/**
+ * Only the keys present in `patch` are written, so a caller that means "leave
+ * the headline alone" (omit) is never confused with "clear the headline"
+ * (explicit null).
+ */
+function pageSettingsPatchToRow(
+  patch: Partial<Omit<PageSettings, "memberKey" | "createdAt" | "updatedAt">>
+): Record<string, unknown> {
+  const row: Record<string, unknown> = {};
+  if (patch.enabled !== undefined) row.enabled = patch.enabled;
+  if (patch.headline !== undefined) row.headline = patch.headline;
+  if (patch.blurb !== undefined) row.blurb = patch.blurb;
+  if (patch.windowStartMin !== undefined) row.window_start_min = patch.windowStartMin;
+  if (patch.windowEndMin !== undefined) row.window_end_min = patch.windowEndMin;
+  if (patch.bookableWeekdays !== undefined) row.bookable_weekdays = patch.bookableWeekdays;
+  if (patch.durationMinutes !== undefined) row.duration_minutes = patch.durationMinutes;
+  if (patch.slotStepMinutes !== undefined) row.slot_step_minutes = patch.slotStepMinutes;
+  if (patch.minNoticeMinutes !== undefined) row.min_notice_minutes = patch.minNoticeMinutes;
+  if (patch.horizonDays !== undefined) row.horizon_days = patch.horizonDays;
+  if (patch.eventTitle !== undefined) row.event_title = patch.eventTitle;
+  if (patch.eventDescription !== undefined) row.event_description = patch.eventDescription;
+  if (patch.slackWebhookEnc !== undefined) row.slack_webhook_enc = patch.slackWebhookEnc;
+  return row;
+}
+
 function accountFromRow(r: AccountRow): CalendarAccount {
   return {
     id: r.id,
@@ -127,6 +206,9 @@ function accountFromRow(r: AccountRow): CalendarAccount {
 function bookingFromRow(r: BookingRow): Booking {
   return {
     id: r.id,
+    // Rows written before personal pages existed have no page_key; they are
+    // all team bookings, which is what "" means.
+    pageKey: r.page_key ?? "",
     startAt: r.start_at,
     endAt: r.end_at,
     durationMinutes: r.duration_minutes,
@@ -151,6 +233,7 @@ function bookingFromRow(r: BookingRow): Booking {
 function bookingToRow(b: Booking): BookingRow {
   return {
     id: b.id,
+    page_key: b.pageKey,
     start_at: b.startAt,
     end_at: b.endAt,
     duration_minutes: b.durationMinutes,
@@ -170,6 +253,23 @@ function bookingToRow(b: Booking): BookingRow {
     created_at: b.createdAt,
     cancelled_at: b.cancelledAt,
   };
+}
+
+/**
+ * True when a constraint violation came from the confirmed-slot index rather
+ * than some other constraint on the table. Both index names are accepted so a
+ * booking during the migration window still reads correctly.
+ */
+function isSlotConflict(error: { message: string; details?: string | null }): boolean {
+  const detail = `${error.message} ${error.details ?? ""}`;
+  return (
+    detail.includes("meet_bookings_confirmed_page_slot") ||
+    detail.includes("meet_bookings_confirmed_slot") ||
+    // 23P01 comes from the overlap constraint, whose name matches neither
+    // index. Without it a real overlap throws and the visitor gets a 500
+    // instead of "that time was just booked".
+    detail.includes("meet_bookings_no_overlap")
+  );
 }
 
 class SupabaseMeetStore implements MeetStore {
@@ -245,11 +345,53 @@ class SupabaseMeetStore implements MeetStore {
     if (error) throw new Error(`meet_accounts delete failed: ${error.message}`);
   }
 
+  async listPageSettings(): Promise<PageSettings[]> {
+    const { data, error } = await this.client
+      .from("meet_page_settings")
+      .select("*")
+      .order("member_key", { ascending: true });
+    if (error) throw new Error(`meet_page_settings list failed: ${error.message}`);
+    return (data as PageSettingsRow[]).map(pageSettingsFromRow);
+  }
+
+  async getPageSettings(memberKey: string): Promise<PageSettings | null> {
+    const { data, error } = await this.client
+      .from("meet_page_settings")
+      .select("*")
+      .eq("member_key", memberKey)
+      .maybeSingle();
+    if (error) throw new Error(`meet_page_settings get failed: ${error.message}`);
+    return data ? pageSettingsFromRow(data as PageSettingsRow) : null;
+  }
+
+  async upsertPageSettings(
+    memberKey: string,
+    patch: Partial<Omit<PageSettings, "memberKey" | "createdAt" | "updatedAt">>
+  ): Promise<PageSettings> {
+    const { data, error } = await this.client
+      .from("meet_page_settings")
+      .upsert(
+        {
+          member_key: memberKey,
+          ...pageSettingsPatchToRow(patch),
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "member_key" }
+      )
+      .select()
+      .single();
+    if (error) throw new Error(`meet_page_settings upsert failed: ${error.message}`);
+    return pageSettingsFromRow(data as PageSettingsRow);
+  }
+
   async insertBooking(booking: Booking): Promise<InsertBookingResult> {
     const { error } = await this.client.from("meet_bookings").insert(bookingToRow(booking));
     if (error) {
-      // 23505 = unique_violation on the confirmed-slot index.
-      if (error.code === "23505" || error.code === "23P01") {
+      // 23505 = unique_violation, 23P01 = exclusion_violation. Only the
+      // confirmed-slot index means "that time is taken"; the table also has a
+      // unique manage_token, and reporting that as a slot conflict would hide
+      // a real bug behind a phantom one.
+      if ((error.code === "23505" || error.code === "23P01") && isSlotConflict(error)) {
         return { ok: false, reason: "slot_taken" };
       }
       throw new Error(`meet_bookings insert failed: ${error.message}`);
@@ -385,6 +527,7 @@ class SupabaseMeetStore implements MeetStore {
 export class MemoryMeetStore implements MeetStore {
   accounts: CalendarAccount[] = [];
   bookings: Booking[] = [];
+  pageSettings: PageSettings[] = [];
 
   async listAccounts(): Promise<CalendarAccount[]> {
     return [...this.accounts];
@@ -430,9 +573,62 @@ export class MemoryMeetStore implements MeetStore {
     this.accounts = this.accounts.filter((a) => a.id !== id);
   }
 
+  async listPageSettings(): Promise<PageSettings[]> {
+    return this.pageSettings.map((p) => ({ ...p }));
+  }
+
+  async getPageSettings(memberKey: string): Promise<PageSettings | null> {
+    const found = this.pageSettings.find((p) => p.memberKey === memberKey);
+    return found ? { ...found } : null;
+  }
+
+  async upsertPageSettings(
+    memberKey: string,
+    patch: Partial<Omit<PageSettings, "memberKey" | "createdAt" | "updatedAt">>
+  ): Promise<PageSettings> {
+    const now = new Date().toISOString();
+    // Mirrors the SQL upsert: only keys present in the patch are written, so
+    // an omitted field keeps its stored value and an explicit null clears it.
+    const defined = Object.fromEntries(
+      Object.entries(patch).filter(([, value]) => value !== undefined)
+    );
+    const existing = this.pageSettings.find((p) => p.memberKey === memberKey);
+    if (existing) {
+      Object.assign(existing, defined, { updatedAt: now });
+      return { ...existing };
+    }
+    const created: PageSettings = {
+      memberKey,
+      enabled: true,
+      headline: null,
+      blurb: null,
+      windowStartMin: null,
+      windowEndMin: null,
+      bookableWeekdays: null,
+      durationMinutes: null,
+      slotStepMinutes: null,
+      minNoticeMinutes: null,
+      horizonDays: null,
+      eventTitle: null,
+      eventDescription: null,
+      slackWebhookEnc: null,
+      createdAt: now,
+      updatedAt: now,
+      ...defined,
+    };
+    this.pageSettings.push(created);
+    return { ...created };
+  }
+
   async insertBooking(booking: Booking): Promise<InsertBookingResult> {
+    // Hand-written mirror of meet_bookings_confirmed_page_slot. If this drifts
+    // from the SQL index, mock mode and the whole test suite keep proving a
+    // rule production does not have.
     const clash = this.bookings.some(
-      (b) => b.status === "confirmed" && b.startAt === booking.startAt
+      (b) =>
+        b.status === "confirmed" &&
+        b.startAt === booking.startAt &&
+        b.pageKey === booking.pageKey
     );
     if (clash) return { ok: false, reason: "slot_taken" };
     this.bookings.push({ ...booking });
@@ -463,7 +659,11 @@ export class MemoryMeetStore implements MeetStore {
       return { ok: false, reason: "stale" };
     }
     const clash = this.bookings.some(
-      (b) => b.id !== id && b.status === "confirmed" && b.startAt === startAt
+      (b) =>
+        b.id !== id &&
+        b.status === "confirmed" &&
+        b.startAt === startAt &&
+        b.pageKey === booking.pageKey
     );
     if (clash) return { ok: false, reason: "slot_taken" };
     booking.startAt = startAt;
