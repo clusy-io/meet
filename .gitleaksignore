@@ -1,0 +1,13 @@
+# Gitleaks fingerprints that are verified false positives.
+#
+# Each entry must be justified here. History cannot be rewritten on a published
+# repository, so a fixture that once looked like a credential stays reachable in
+# the log even after the working tree is corrected, and the full-history scan
+# keeps finding it.
+
+# A test fixture standing in for a booking's manage token, in the assertion that
+# proves the Slack payload never carries one. It was written to look realistic,
+# which is exactly what made a scanner flag it. Verified never issued: no
+# booking in any deployment has held it, and it originated from a local
+# mock-mode run. The working tree no longer contains a high-entropy value.
+4fe31b06d66cd47cd2e89758920e895097396747:src/lib/meet/__tests__/slack.test.ts:generic-api-key:15
