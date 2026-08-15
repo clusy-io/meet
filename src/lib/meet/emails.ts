@@ -1,6 +1,7 @@
 import "server-only";
 import { Resend } from "resend";
 import { getMeetConfig, type MeetConfig } from "./config";
+import { productCta } from "./cta";
 import { buildIcs } from "./ics";
 import type { Booking, Member } from "./types";
 
@@ -117,6 +118,32 @@ function meetButton(url: string): string {
     `background-color:${INK};color:${PAPER};text-decoration:none;border-radius:6px;` +
     `padding:10px 16px;font-size:14px;font-weight:500;">Join the video call</a>`
   );
+}
+
+/**
+ * Optional product nudge, for the BOOKER's confirmation only.
+ *
+ * Empty string when unconfigured, so the call site needs no branch. Never on
+ * the team copy (they work here), on cancellations (a pitch attached to "your
+ * call is cancelled" reads badly), or on reminders. Both this and the
+ * plaintext version below come from productCta(), so the two bodies of the
+ * same email cannot say different things.
+ */
+function productCtaBlock(): string {
+  const cta = productCta();
+  if (!cta) return "";
+  return (
+    hairline() +
+    `<p style="margin:0;font-size:13px;color:${MUTED};">${escapeHtml(cta.lead)}: ` +
+    `${escapeHtml(cta.body)}<br/>${link(cta.href, cta.linkLabel)}</p>`
+  );
+}
+
+/** Plaintext twin of productCtaBlock, same source. */
+function productCtaText(): string[] {
+  const cta = productCta();
+  if (!cta) return [];
+  return ["", `${cta.lead}: ${cta.body}`, `${cta.linkLabel}: ${cta.href}`];
 }
 
 function manageBlock(manageUrl: string): string {
@@ -285,7 +312,8 @@ export async function sendBookingConfirmed(
           (booking.guests.length > 0
             ? row("Guests", booking.guests.map(escapeHtml).join("<br/>"))
             : "") +
-          manageBlock(manageUrl)
+          manageBlock(manageUrl) +
+          productCtaBlock()
       ),
       text: [
         "Your call is confirmed",
@@ -298,6 +326,7 @@ export async function sendBookingConfirmed(
         "",
         "Need to change it? Reschedule or cancel:",
         manageUrl,
+        ...productCtaText(),
       ].join("\n"),
       attachments,
     };

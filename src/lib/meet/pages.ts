@@ -1,5 +1,6 @@
 import "server-only";
 
+import { cache } from "react";
 import { getMeetConfig, type MeetConfig } from "./config";
 import { decryptSecret } from "./crypto";
 import { getMeetStore } from "./store";
@@ -149,12 +150,12 @@ export function isReservedPageSlug(slug: string): boolean {
  * member. Callers decide what an existing-but-disabled page means: visitors
  * get a 404, the admin console still lists it.
  */
-export async function getPage(memberKey: string): Promise<MeetPage | null> {
+export const getPage = cache(async (memberKey: string): Promise<MeetPage | null> => {
   if (isReservedPageSlug(memberKey)) return null;
   const member = getMeetConfig().members.find((m) => m.key === memberKey);
   if (!member) return null;
   return toPage(member, await getMeetStore().getPageSettings(memberKey));
-}
+});
 
 /** Every configured member's page, in config order, live or not. */
 export async function listPages(): Promise<MeetPage[]> {

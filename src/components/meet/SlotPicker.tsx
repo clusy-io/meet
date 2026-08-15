@@ -1,6 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import {
@@ -40,6 +48,16 @@ const FOCUS_RING =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60";
 
 const WEEKDAY_HEADER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+/** Matches --ease-out-expo in globals.css. */
+const EASE_OUT_EXPO = [0.16, 1, 0.3, 1] as const;
+
+/* Hydration probe for useSyncExternalStore. Module-level so the identities are
+   stable across renders; the value never changes after the first client
+   render, so the store never needs to notify anyone. */
+const subscribeNoop = () => () => {};
+const snapshotClient = () => true;
+const snapshotServer = () => false;
 
 /** Mon=0 .. Sun=6 for a civil day number (epoch day 0 was a Thursday). */
 function weekdayIndex(dayNumber: number): number {
@@ -96,6 +114,17 @@ interface MonthModel {
   weeks: MonthCell[][];
 }
 
+declare global {
+  interface Window {
+    /**
+     * Set by the inline prime script (AvailabilityPrime) so the availability
+     * request can start during HTML parsing instead of after hydration.
+     * Deleted by whichever SlotPicker consumes it, so it is used at most once.
+     */
+    __clusyMeetAvail?: { url: string; p: Promise<AvailabilityResponse> };
+  }
+}
+
 type AvailabilityLoadState =
   | { requestKey: string; status: "loading" }
   | { requestKey: string; status: "ready"; data: AvailabilityResponse }
@@ -110,7 +139,12 @@ function buildMonth(
   const start = addCivilDays(year, month, 1, -weekdayIndex(firstNumber));
   const weeks: MonthCell[][] = [];
   let cursor = start;
-  do {
+  // Six rows, always. A month needs five or six depending on where its first
+  // day falls, and that made the calendar card 348px or 398px: it resized when
+  // the visitor paged months, and no loading state could match both heights
+  // without knowing which month it was about to draw. The extra row is
+  // out-of-month cells, which are already inert.
+  for (let w = 0; w < 6; w++) {
     const week: MonthCell[] = [];
     for (let i = 0; i < 7; i++) {
       const key = formatCivilDate(cursor.year, cursor.month, cursor.day);
@@ -123,7 +157,7 @@ function buildMonth(
       cursor = addCivilDays(cursor.year, cursor.month, cursor.day, 1);
     }
     weeks.push(week);
-  } while (cursor.month === month && cursor.year === year);
+  }
   return {
     key: `${year}-${String(month).padStart(2, "0")}`,
     labelMs: Date.UTC(year, month - 1, 1, 12),
@@ -186,6 +220,23 @@ export function SlotPicker(props: {
   // and re-run the reveal on every render anyway.
   const revealedRef = useRef(new WeakMap<HTMLElement, string>());
 
+  // Dates are the one timezone-dependent thing in this tree, and the server
+  // resolves Intl to the SERVER's zone. So the server frame draws the calendar
+  // chrome with no day numbers, the first client render matches it exactly, and
+  // the numbers fade in immediately afterwards. Rendering them server-side
+  // instead would be a hydration mismatch for anyone outside the server's zone,
+  // which surfaces as a console error and fails the invariant suite.
+  // useSyncExternalStore rather than an effect: it is the sanctioned way to
+  // read "am I on the client yet" without a synchronous setState in an effect,
+  // and React uses the server snapshot for the hydration render, which is
+  // exactly the frame that has to match the server's date-free output.
+  //
+  // Doubles as the "is this the first commit" signal, which is why no ref is
+  // needed: framer reads `initial` only when an element mounts, and the day
+  // cells mount during hydration, when this is still false. Cells that mount
+  // later (a month switch) see true and get their stagger.
+  const hydrated = useSyncExternalStore(subscribeNoop, snapshotClient, snapshotServer);
+
   useEffect(() => {
     let cancelled = false;
     const query = new URLSearchParams();
@@ -194,8 +245,30 @@ export function SlotPicker(props: {
     const url = query.size > 0
       ? `/api/meet/availability?${query.toString()}`
       : "/api/meet/availability";
-    fetch(url)
+    // Adopt the request the inline prime script started during HTML parsing,
+    // if it is for exactly this URL. Three guards, all load-bearing: the URL
+    // must match byte for byte (a personal page must never adopt the team
+    // page's response, which is the same bug class the requestKey guards
+    // against); a manage token is never primed, since its response depends on
+    // a bearer credential; and it is consumed exactly once, so a retry or a
+    // host change always issues a genuinely fresh request rather than
+    // replaying a stale body.
+    const primed = typeof window === "undefined" ? undefined : window.__clusyMeetAvail;
+    let inflight: Promise<Response | AvailabilityResponse>;
+    if (primed && primed.url === url && !manageToken) {
+      delete window.__clusyMeetAvail;
+      inflight = primed.p;
+    } else {
+      // Without a timeout a hung request waits forever behind the loading
+      // state with no way out; the catch below already routes to the retry
+      // card.
+      inflight = fetch(url, { signal: AbortSignal.timeout(15_000) });
+    }
+
+    inflight
       .then((res) => {
+        // An adopted promise is already parsed JSON; a fresh one is a Response.
+        if (!(res instanceof Response)) return res;
         if ((manageToken || host) && res.status === 404) {
           if (!cancelled) setLoadState({ requestKey, status: "not-found" });
           return null;
@@ -206,8 +279,17 @@ export function SlotPicker(props: {
       .then((json) => {
         if (!cancelled && json) setLoadState({ requestKey, status: "ready", data: json });
       })
-      .catch(() => {
-        if (!cancelled) setLoadState({ requestKey, status: "failed" });
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        // The prime script rejects with the numeric status rather than a
+        // Response, so the not-found branch has to be recognised here too or a
+        // page disabled between render and fetch would report a generic
+        // failure and offer a "Try again" that can never succeed.
+        if ((manageToken || host) && error === 404) {
+          setLoadState({ requestKey, status: "not-found" });
+          return;
+        }
+        setLoadState({ requestKey, status: "failed" });
       });
     return () => {
       cancelled = true;
@@ -218,6 +300,22 @@ export function SlotPicker(props: {
   const data = currentLoad?.status === "ready" ? currentLoad.data : null;
   const failed = currentLoad?.status === "failed";
   const notFound = currentLoad?.status === "not-found";
+  /** Calendar is drawn, availability has not arrived. */
+  const pending = !data && !failed && !notFound;
+
+  // A wait long enough to need explaining. The reserved caption row exists
+  // whether or not it has text, so this costs no reflow when it appears.
+  //
+  // Stores WHICH request went slow rather than a bare boolean, so the reset is
+  // derived instead of being a second setState in the effect: pressing "Try
+  // again" bumps `attempt`, which changes requestKey, which clears this.
+  const [slowRequestKey, setSlowRequestKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (!pending) return;
+    const timer = window.setTimeout(() => setSlowRequestKey(requestKey), 3000);
+    return () => window.clearTimeout(timer);
+  }, [pending, requestKey]);
+  const slow = slowRequestKey === requestKey;
 
   useEffect(() => {
     if (!data) return;
@@ -253,7 +351,14 @@ export function SlotPicker(props: {
 
   const months = useMemo<MonthModel[]>(() => {
     const keys = [...slotsByDay.keys()].sort();
-    if (keys.length === 0) return [];
+    if (keys.length === 0) {
+      // Before availability lands, and when there is none at all, the visitor's
+      // own clock already fixes which month belongs on screen, and six-row
+      // months fix its box. Drawing it now is what lets the response arrive
+      // without swapping one subtree for another.
+      const w = utcToWall(timezone, nowMs);
+      return [buildMonth(w.year, w.month, slotsByDay)];
+    }
     const first = parseCivilDate(keys[0]);
     const last = parseCivilDate(keys[keys.length - 1]);
     if (!first || !last) return [];
@@ -269,7 +374,7 @@ export function SlotPicker(props: {
       }
     }
     return out;
-  }, [slotsByDay]);
+  }, [slotsByDay, timezone, nowMs]);
 
   // Derived, not synced: timezone changes can shift a chosen instant onto a
   // different civil day. Keep stage 3 attached to that instant's new day;
@@ -337,26 +442,11 @@ export function SlotPicker(props: {
     );
   }
 
-  if (!data && !failed) {
-    return (
-      <div
-        role="status"
-        aria-live="polite"
-        className="mx-auto w-full max-w-[390px] rounded-lg border border-hairline bg-paper-raise p-5"
-        aria-busy="true"
-      >
-        <span className="sr-only">Loading available times</span>
-        <div className="mb-4 h-6 w-40 animate-pulse rounded-md bg-ink/5" />
-        <div className="grid grid-cols-7 gap-1.5">
-          {Array.from({ length: 42 }, (_, i) => (
-            <div key={i} className="aspect-square animate-pulse rounded-lg bg-ink/5" />
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  if (failed || !data) {
+  // No loading branch: the calendar below renders from the first frame and
+  // fills in. Replacing a skeleton subtree with the real one is what used to
+  // move the card 19px (a missing weekday header), resize it 31px between five
+  // and six row months, and shift every cell 8px on mobile (p-5 against p-4).
+  if (failed) {
     return (
       <div className="rounded-lg border border-hairline bg-paper-raise p-4 sm:p-5">
         <p className="text-sm text-ink-mute">Could not load available times.</p>
@@ -371,13 +461,34 @@ export function SlotPicker(props: {
     );
   }
 
-  if (!month) {
-    return (
-      <div className="rounded-lg border border-hairline bg-paper-raise p-4 sm:p-5">
-        <p className="text-sm text-ink-mute">No times available right now.</p>
-      </div>
-    );
-  }
+  // `months` always holds at least the visitor's current month now, so `month`
+  // is never null; "no times available" became the caption line below, which
+  // keeps the calendar on screen instead of replacing it with a sentence.
+  if (!month) return <></>;
+
+  // Only reachable from a rendered time chip, and there are no chips while
+  // pending, so the fallback is never the value handed to onSelect.
+  const durationMinutes = data?.durationMinutes ?? 0;
+
+  /**
+   * Reserved caption row: same height whether or not it has something to say.
+   *
+   * `reducedMotion` is gated on `hydrated` for the same reason the dates are.
+   * framer's useReducedMotion() calls matchMedia in the RENDER BODY, so it is
+   * already true on the client's very first render while the server, having no
+   * matchMedia, resolved it to false. Reading it ungated here changed whether a
+   * <p> existed at all, which is a node-shape mismatch: React 19 discards the
+   * whole subtree and client-renders from the root, taking the layoutId pills
+   * and the time column's scroll container with it.
+   */
+  const captionMotionCue = hydrated && reducedMotion;
+  const caption = pending
+    ? slow || captionMotionCue
+      ? "Still checking calendars"
+      : ""
+    : slotsByDay.size === 0
+      ? "No times available right now."
+      : "";
 
   // `selectedDay`, not `selectedSlot`: selectedDay is null once the chosen
   // instant is no longer among the live slots, which is what happens when the
@@ -416,7 +527,16 @@ export function SlotPicker(props: {
             transition={fade}
             className="font-serif-display text-base font-bold text-ink"
           >
-            {MONTH_FMT.format(month.labelMs)}
+            {/* Which month this is depends on the visitor's timezone, which the
+                server cannot know, so it arrives with the dates. The nbsp holds
+                the line's height so nothing shifts when it does. */}
+            <span
+              className={`inline-block transition-opacity duration-200 ease-out motion-reduce:transition-none ${
+                hydrated ? "opacity-100" : "opacity-0"
+              }`}
+            >
+              {hydrated ? MONTH_FMT.format(month.labelMs) : " "}
+            </span>
           </motion.p>
         </AnimatePresence>
         <div className="flex items-center gap-1">
@@ -468,21 +588,45 @@ export function SlotPicker(props: {
         >
           {month.weeks.flat().map((cell, i) => {
             const isActive = cell.key === activeDay;
-            const bookable = cell.inMonth && cell.slotCount > 0;
-            if (!cell.inMonth) {
-              return <span key={cell.key} aria-hidden className="aspect-square" />;
-            }
+            const bookable = hydrated && cell.inMonth && cell.slotCount > 0;
+            // One diagonal wave from the top-left rather than 42 independent
+            // events, so the calendar reads as a single thing filling in.
+            //
+            // Gated on `hydrated` as well, because this reaches the DOM as an
+            // inline transition-delay: ungated it emitted 0.036s from the
+            // server and 0s on a reduced-motion client, 42 times over.
+            const wave =
+              hydrated && !reducedMotion
+                ? Math.min(((i % 7) + Math.floor(i / 7)) * 0.018, 0.22)
+                : 0;
+            // Out-of-month cells are disabled buttons, not spans: keeping the
+            // element type of all 42 cells constant from the server frame
+            // through data arrival is what guarantees no remount and no
+            // reparent, which is the class of change that has broken the
+            // scroll invariants in this file before.
             return (
               <motion.button
                 key={cell.key}
                 type="button"
                 disabled={!bookable}
-                aria-pressed={isActive}
-                aria-label={`${CALENDAR_DAY_FMT.format(
-                  new Date(`${cell.key}T12:00:00Z`)
-                )}, ${cell.slotCount} ${cell.slotCount === 1 ? "time" : "times"} available`}
+                // Both gated on `hydrated`: which cells are in-month is a
+                // function of the visitor's timezone, so emitting either of
+                // these server-side would be a hydration mismatch for anyone
+                // outside the server's zone.
+                aria-hidden={hydrated && !cell.inMonth ? true : undefined}
+                aria-pressed={hydrated && cell.inMonth ? isActive : undefined}
+                aria-label={
+                  hydrated && cell.inMonth
+                    ? `${CALENDAR_DAY_FMT.format(
+                        new Date(`${cell.key}T12:00:00Z`)
+                      )}, ${cell.slotCount} ${cell.slotCount === 1 ? "time" : "times"} available`
+                    : undefined
+                }
                 onClick={() => handleDayClick(cell.key)}
-                initial={reducedMotion ? false : { opacity: 0, y: 4 }}
+                // No entrance on the first commit: these cells are already in
+                // the server HTML, so fading them up from 0 would flash away
+                // something the visitor can see.
+                initial={reducedMotion || !hydrated ? false : { opacity: 0, y: 4 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={
                   reducedMotion
@@ -505,11 +649,27 @@ export function SlotPicker(props: {
                     aria-hidden
                   />
                 ) : null}
-                <span className="relative z-10">{cell.dayNum}</span>
+                <span
+                  className={`relative z-10 transition-opacity duration-200 ease-out motion-reduce:transition-none ${
+                    hydrated ? "opacity-100" : "opacity-0"
+                  }`}
+                  style={{ transitionDelay: `${wave}s` }}
+                >
+                  {hydrated && cell.inMonth ? cell.dayNum : ""}
+                </span>
                 {bookable && !isActive ? (
-                  <span
+                  <motion.span
                     aria-hidden
-                    className="absolute bottom-1 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-accent/70"
+                    // x rides the transform framer writes; a Tailwind
+                    // -translate-x-1/2 would be overwritten by the scale.
+                    initial={reducedMotion ? false : { opacity: 0, scale: 0.4, x: "-50%" }}
+                    animate={{ opacity: 1, scale: 1, x: "-50%" }}
+                    transition={
+                      reducedMotion
+                        ? { duration: 0 }
+                        : { duration: 0.28, ease: EASE_OUT_EXPO, delay: wave }
+                    }
+                    className="absolute bottom-1 left-1/2 h-1 w-1 rounded-full bg-accent/70"
                   />
                 ) : null}
               </motion.button>
@@ -578,7 +738,7 @@ export function SlotPicker(props: {
             type="button"
             disabled={selecting}
             data-meet-time
-            onClick={() => onSelect(iso, timezone, data.durationMinutes)}
+            onClick={() => onSelect(iso, timezone, durationMinutes)}
             aria-label={`${longDayFmt.format(Date.parse(iso))} at ${timeFmt.format(Date.parse(iso))}`}
             initial={reducedMotion ? false : { opacity: 0, y: 6 }}
             animate={{ opacity: 1, y: 0 }}
@@ -611,7 +771,7 @@ export function SlotPicker(props: {
               type="button"
               disabled={selecting}
               data-meet-time
-              onClick={() => onSelect(iso, timezone, data.durationMinutes)}
+              onClick={() => onSelect(iso, timezone, durationMinutes)}
               aria-pressed={isChosen}
               className={`relative shrink-0 rounded-md px-3 py-2 text-sm font-medium transition-colors duration-150 disabled:opacity-60 ${FOCUS_RING} ${
                 isChosen ? "text-paper" : "text-ink-soft hover:bg-ink/[0.06] hover:text-ink"
@@ -640,6 +800,20 @@ export function SlotPicker(props: {
 
   return (
     <div>
+      {/*
+        One persistent live region. It used to live inside the skeleton, so it
+        mounted and unmounted with it, which is the least reliable live-region
+        pattern there is. A region that already exists announces reliably; its
+        pending text is what the server renders, so hydration matches.
+      */}
+      <p role="status" aria-live="polite" className="sr-only">
+        {pending
+          ? "Loading available times"
+          : slotsByDay.size === 0
+            ? "No times available right now"
+            : `${slotsByDay.size} ${slotsByDay.size === 1 ? "day" : "days"} with available times. Select a date.`}
+      </p>
+
       {/* Phones: one stage on screen at a time, summary bars walk back. */}
       <div className="lg:hidden">
         <AnimatePresence mode="wait" initial={false}>
@@ -650,7 +824,10 @@ export function SlotPicker(props: {
               animate={{ opacity: 1, x: 0 }}
               exit={reducedMotion ? undefined : { opacity: 0, x: -16 }}
               transition={fade}
-              className="mx-auto w-full max-w-[390px] rounded-lg border border-hairline bg-paper-raise p-4"
+              aria-busy={pending || undefined}
+              className={`mx-auto w-full max-w-[390px] rounded-lg border border-hairline bg-paper-raise p-4 ${
+                pending ? "meet-loading" : ""
+              }`}
             >
               {renderCalendar("m")}
             </motion.div>
@@ -718,9 +895,10 @@ export function SlotPicker(props: {
             initial={false}
             animate={{ opacity: 1 }}
             transition={fade}
+            aria-busy={pending || undefined}
             className={`rounded-lg border border-hairline bg-paper-raise p-5 ${
               expanded ? "w-[320px]" : "mx-auto mt-6 w-[390px]"
-            }`}
+            } ${pending ? "meet-loading" : ""}`}
           >
             {renderCalendar("d")}
           </motion.div>
@@ -770,12 +948,43 @@ export function SlotPicker(props: {
         </div>
       </div>
 
+      {/*
+        Reserved caption row: 20px tall in the opening stage whether or not it
+        has anything to say, so the ">3s" message and the "fully booked" line
+        both cost zero reflow. The timezone row's top margin drops from mt-7 to
+        mt-3 to pay for it, so the composition is about 16px taller, not 48px.
+      */}
+      {!expanded ? (
+        <div className="mt-3 flex h-5 items-center justify-center">
+          <AnimatePresence mode="wait" initial={false}>
+            {caption ? (
+              <motion.p
+                key={caption}
+                initial={reducedMotion ? false : { opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={reducedMotion ? undefined : { opacity: 0 }}
+                transition={{ duration: reducedMotion ? 0 : 0.24, ease: "easeOut" }}
+                className="text-xs text-ink-mute"
+              >
+                {caption}
+              </motion.p>
+            ) : null}
+          </AnimatePresence>
+        </div>
+      ) : null}
+
+      {/*
+        h-6 is the trigger button's exact height (16px line box + py-1), so the
+        row holds its space from the server frame onward. The select itself
+        only mounts once hydrated, because its label is the resolved timezone
+        name and the server resolves that to the SERVER's zone.
+      */}
       <div
-        className={`${expanded ? "mt-4" : "mt-7"} ${
+        className={`${expanded ? "mt-4" : "mt-3"} ${
           formOpen ? "hidden lg:flex" : "flex"
-        } justify-center`}
+        } h-6 justify-center`}
       >
-        <TimezoneSelect value={timezone} onChange={handleTimezoneChange} />
+        {hydrated ? <TimezoneSelect value={timezone} onChange={handleTimezoneChange} /> : null}
       </div>
     </div>
   );

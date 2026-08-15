@@ -4,6 +4,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import ThemeToggle from "@/components/ThemeToggle";
 import SiteFooter from "@/components/SiteFooter";
+import { AvailabilityPrime } from "@/components/meet/AvailabilityPrime";
 import MeetBooking from "@/components/meet/MeetBooking";
 import { getPage } from "@/lib/meet/pages";
 import { SITE } from "@/meet.config";
@@ -56,6 +57,7 @@ export default async function MemberBookingPage({ params }: RouteParams) {
 
   return (
     <main className="flex min-h-screen flex-col bg-paper text-ink">
+      <AvailabilityPrime host={page.member.key} />
       <header className="flex items-center justify-between px-5 py-4 sm:px-8">
         <Link
           href={SITE.homepage}

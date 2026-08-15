@@ -93,9 +93,18 @@ const check = (name, ok, detail) => {
 
 const browser = await chromium.launch({ executablePath: chromePath() });
 const page = await browser.newPage({ viewport: { width: 1500, height: 1000 } });
+/*
+ * Vercel Web Analytics injects /_vercel/insights/script.js, which only exists
+ * on a Vercel deployment. Running the build locally therefore always logs one
+ * 404 that has nothing to do with this page. Ignored NARROWLY, by exact path,
+ * so any other failed request still fails the check.
+ */
+const isLocalOnlyNoise = (text, location) =>
+  `${text} ${location?.url ?? ""}`.includes("_vercel/insights");
+
 const consoleErrors = [];
-page.on("pageerror", (e) => consoleErrors.push(String(e)));
-page.on("console", (m) => m.type() === "error" && consoleErrors.push(m.text()));
+page.on("pageerror", (e) => !isLocalOnlyNoise(String(e)) && consoleErrors.push(String(e)));
+page.on("console", (m) => m.type() === "error" && !isLocalOnlyNoise(m.text(), m.location()) && consoleErrors.push(m.text()));
 
 await page.goto(BASE, { waitUntil: "networkidle" });
 await page.waitForTimeout(1800);
@@ -195,6 +204,41 @@ check(
 );
 
 check("no console errors", consoleErrors.length === 0, consoleErrors.join(" ~ ").slice(0, 160));
+
+/*
+ * Second pass, reduced motion.
+ *
+ * Playwright emulates `reducedMotion: 'no-preference'` by DEFAULT, so every
+ * check above runs on the only path where a reduced-motion hydration mismatch
+ * cannot happen. That is not hypothetical: framer's useReducedMotion() calls
+ * matchMedia in the render body, so it is true on the client's first render
+ * and false on the server, and any rendered value derived from it un-gated is
+ * a mismatch. One shipped here and this suite reported 6/6 while it was live.
+ *
+ * Only the console-error check is repeated: the scroll invariants are about
+ * layout, and re-running them under reduced motion would mostly re-test
+ * framer. This is about the hydration render.
+ */
+const rmPage = await browser.newPage({
+  viewport: { width: 1500, height: 1000 },
+  reducedMotion: "reduce",
+});
+const rmErrors = [];
+rmPage.on("pageerror", (e) => !isLocalOnlyNoise(String(e)) && rmErrors.push(String(e)));
+rmPage.on("console", (m) => m.type() === "error" && !isLocalOnlyNoise(m.text(), m.location()) && rmErrors.push(m.text()));
+await rmPage.goto(BASE, { waitUntil: "load" });
+await rmPage.waitForTimeout(1500);
+// React logs hydration failures as #418/#423 in production builds, and as a
+// spelled-out message in dev; match both.
+const rmHydration = rmErrors.filter((e) =>
+  /hydrat|#418|#423|didn't match|did not match/i.test(e)
+);
+check(
+  "no hydration mismatch under prefers-reduced-motion",
+  rmHydration.length === 0,
+  rmHydration.join(" ~ ").slice(0, 200)
+);
+await rmPage.close();
 
 await browser.close();
 const failed = results.filter((r) => !r.ok);

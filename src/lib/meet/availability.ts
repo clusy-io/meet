@@ -5,12 +5,13 @@ import { ensureMockReady } from "./mock";
 import { getProvider } from "./providers";
 import { availableSlots, candidateSlots } from "./slots";
 import { getMeetStore } from "./store";
-import { parseCivilDate, wallToUtcMs } from "./tz";
+import { addCivilDays, formatCivilDate, parseCivilDate, utcToWall, wallToUtcMs } from "./tz";
 import {
   mergeBusy,
   overlapsBusy,
   ProviderAuthError,
   type AvailabilityResponse,
+  type Booking,
   type BusyInterval,
   type CalendarAccount,
   type Member,
@@ -24,8 +25,6 @@ import {
  * grant, provider outage, undecryptable token) is dropped from the free
  * candidates entirely, because an unreadable calendar must not look free.
  */
-
-const DAY_MS = 86_400_000;
 
 /**
  * Fetch one account's busy intervals. Kept async so a synchronous decrypt
@@ -118,9 +117,17 @@ async function providerBusyByMember(
 async function withBookingsOverlay(
   providerBusy: Map<string, BusyInterval[]>,
   fromMs: number,
-  toMs: number
+  toMs: number,
+  /**
+   * An already-started read for the SAME window. computeAvailability kicks the
+   * query off before awaiting the providers, since it depends on nothing they
+   * return; passing it here keeps the "always fresh, never cached" contract
+   * intact, because it is still one uncached read per request.
+   */
+  bookingsPromise?: Promise<Booking[]>
 ): Promise<Map<string, BusyInterval[]>> {
-  const bookings = await getMeetStore().listConfirmedBookingsInRange(fromMs, toMs);
+  const bookings = await (bookingsPromise ??
+    getMeetStore().listConfirmedBookingsInRange(fromMs, toMs));
   if (bookings.length === 0) return providerBusy;
   const map = new Map<string, BusyInterval[]>();
   for (const [memberKey, busy] of providerBusy) {
@@ -140,10 +147,38 @@ async function withBookingsOverlay(
 
 interface BusyCacheEntry {
   expiresMs: number;
+  /**
+   * The window this map was actually fetched for. Stored so a wider entry can
+   * serve a narrower need: every window starts at host-tz midnight today, so
+   * "does this cover me" reduces to comparing the end.
+   */
+  fromMs: number;
+  toMs: number;
   entries: Array<[string, BusyInterval[]]>;
 }
 
 const CACHE_TTL_MS = 60_000;
+
+/**
+ * The only window worth fetching: host-tz midnight today up to the horizon
+ * edge, which is exactly the range availableSlots will accept (slots.ts
+ * drops anything at or past `today + horizonDays + 1`).
+ *
+ * The caller's `from`/`days` deliberately do NOT appear here. They are
+ * client-controlled (route.ts clamps them only to [today, today+horizon] and
+ * [1,36], ~790 reachable combinations), and keying the cache on them let any
+ * unauthenticated visitor miss on every request and fan out a fresh set of
+ * Google/Microsoft calls each time. Since no candidate outside this window can
+ * survive the horizon filter anyway, a single canonical fetch per day serves
+ * every caller with an identical result.
+ */
+function canonicalWindow(config: MeetConfig): { key: string; fromMs: number; toMs: number } {
+  const today = utcToWall(config.hostTimezone, Date.now());
+  const fromMs = wallToUtcMs(config.hostTimezone, today.year, today.month, today.day, 0, 0);
+  const edge = addCivilDays(today.year, today.month, today.day, config.horizonDays + 1);
+  const toMs = wallToUtcMs(config.hostTimezone, edge.year, edge.month, edge.day, 0, 0);
+  return { key: formatCivilDate(today.year, today.month, today.day), fromMs, toMs };
+}
 
 // globalThis-stashed like the store, so dev-mode module duplication across
 // route bundles still shares one cache.
@@ -205,41 +240,64 @@ export async function computeAvailability(
   const fromCivil = parseCivilDate(from);
   if (!fromCivil) throw new Error(`meet: invalid civil date "${from}"`);
 
-  const windowFromMs = wallToUtcMs(
-    config.hostTimezone,
-    fromCivil.year,
-    fromCivil.month,
-    fromCivil.day,
-    0,
-    0
-  );
-  // One day of slack: the last day's late slots run past its UTC midnight.
-  const windowToMs = windowFromMs + days * DAY_MS + DAY_MS;
+  // Fetch and cache the canonical window, never the caller's. A busy interval
+  // outside the caller's days simply overlaps none of their candidates, so a
+  // wider map is always safe; a narrower one would not be.
+  const { key: cacheKey, fromMs: windowFromMs, toMs: canonicalToMs } = canonicalWindow(config);
 
   const cache = busyCache();
-  const cacheKey = `${from}:${days}`;
   const nowMs = Date.now();
   const hit = cache.get(cacheKey);
+
+  // Identical on both branches: a hit is only accepted when
+  // `hit.toMs >= canonicalToMs`, so `hit.toMs` already IS the max. Computing it
+  // up front is what lets the bookings read start before the provider await.
+  const windowToMs = Math.max(canonicalToMs, hit?.toMs ?? 0);
+
+  // Start the confirmed-bookings read now. It depends only on the window, never
+  // on anything the providers return, so awaiting it after them was ~110ms of
+  // pure serialisation on every cache miss. Still uncached and still one read
+  // per request, which is what invariant 2 actually requires.
+  const bookingsPromise = getMeetStore().listConfirmedBookingsInRange(windowFromMs, windowToMs);
+  // If the provider leg throws first, this would otherwise be an unobserved
+  // rejection. The real error still surfaces when it is awaited below.
+  bookingsPromise.catch(() => {});
+
   let providerBusy: Map<string, BusyInterval[]>;
-  if (hit && hit.expiresMs > nowMs) {
+  if (hit && hit.expiresMs > nowMs && hit.fromMs <= windowFromMs && hit.toMs >= canonicalToMs) {
     providerBusy = new Map(hit.entries);
   } else {
+    // A page with a longer horizon widens the shared entry rather than
+    // replacing it with a narrower one, so a 14-day personal page can never
+    // shrink the window the 21-day team page is relying on.
     // Deliberately fetches EVERY member, not just this page's owner, so the
     // cached map stays page-independent and the team page and each personal
     // page share one entry and one set of provider calls. Narrowing it here
-    // would make the cached value partial while the key (`from:days`) stayed
-    // the same, and the team page would then read a map missing two founders,
-    // fail quorum on every slot, and show a silent 60-second outage.
+    // would make the cached value partial while the key stayed the same, and
+    // the team page would then read a map missing two founders, fail quorum on
+    // every slot, and show a silent 60-second outage.
     providerBusy = await providerBusyByMember(globalConfig, windowFromMs, windowToMs);
-    cache.set(cacheKey, { expiresMs: nowMs + CACHE_TTL_MS, entries: [...providerBusy] });
-    if (cache.size > 64) {
-      for (const [key, entry] of cache) {
-        if (entry.expiresMs <= nowMs) cache.delete(key);
-      }
+    cache.set(cacheKey, {
+      expiresMs: nowMs + CACHE_TTL_MS,
+      fromMs: windowFromMs,
+      toMs: windowToMs,
+      entries: [...providerBusy],
+    });
+    // Keys are host-tz civil dates, so this holds one live entry and sheds
+    // yesterday's shortly after midnight. The previous sweep fired on
+    // `size > 64` but only deleted ALREADY-EXPIRED entries, so a cache full of
+    // live ones grew without bound.
+    for (const [key, entry] of cache) {
+      if (key !== cacheKey && entry.expiresMs <= nowMs) cache.delete(key);
     }
   }
 
-  const fullBusyMap = await withBookingsOverlay(providerBusy, windowFromMs, windowToMs);
+  const fullBusyMap = await withBookingsOverlay(
+    providerBusy,
+    windowFromMs,
+    windowToMs,
+    bookingsPromise
+  );
 
   // A personal page sees a map holding at most its own owner. Scoping the MAP
   // (rather than filtering the output) is what makes quorum irrelevant, and it

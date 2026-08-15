@@ -121,3 +121,48 @@ body {
     transition-duration: 0.001ms !important;
   }
 }
+
+/* ===== booking page: the calendar is drawn before availability lands =====
+   One slow sweep across the card instead of 42 independent pulses. The class
+   is present only while pending, so once data arrives it leaves no positioned
+   ancestor, no overflow and no pseudo-element behind. That lifetime is what
+   keeps it clear of the time column's scroll invariants. */
+.meet-loading {
+  position: relative;
+  overflow: hidden;
+}
+
+.meet-loading::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 42%;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent, hsl(var(--ink) / 0.06), transparent);
+  transform: translate3d(-120%, 0, 0);
+  /* 200ms of nothing first: a response that beats it never paints a single
+     frame. Transform only, so it stays on the compositor and cannot reflow. */
+  animation: meet-sheen 2000ms 200ms cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes meet-sheen {
+  from {
+    transform: translate3d(-120%, 0, 0);
+  }
+
+  to {
+    transform: translate3d(340%, 0, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* No sweep at all. The band is parked off-screen behind overflow:hidden, so
+     removing the animation leaves nothing visible rather than a frozen
+     highlight sitting over the grid. The wait is announced in text instead
+     (the caption appears immediately under reduced motion). */
+  .meet-loading::after {
+    animation: none;
+  }
+}
