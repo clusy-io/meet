@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type CSSProperties,
   type ReactElement,
   type ReactNode,
 } from "react";
@@ -48,9 +49,6 @@ const FOCUS_RING =
   "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60";
 
 const WEEKDAY_HEADER = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-
-/** Matches --ease-out-expo in globals.css. */
-const EASE_OUT_EXPO = [0.16, 1, 0.3, 1] as const;
 
 /* Hydration probe for useSyncExternalStore. Module-level so the identities are
    stable across renders; the value never changes after the first client
@@ -317,6 +315,34 @@ export function SlotPicker(props: {
   }, [pending, requestKey]);
   const slow = slowRequestKey === requestKey;
 
+  // Was the waiting glow ever on screen? Same shape as `slow` above, and for
+  // the same reason: the state is set from inside a timer rather than
+  // synchronously in an effect, and it is keyed by request so "Try again"
+  // clears it for free.
+  //
+  // Armed 400ms into the wait, which is past the 260ms of silence the glow
+  // starts with. A response that beats it clears the timer on the way out, so
+  // this stays null and the dots simply arrive: a fast page never flashes a
+  // loading treatment it did not need.
+  //
+  // Disarmed again once the settle has played, and that half matters just as
+  // much: it is what stops a cell that MOUNTS already resolved (paging to
+  // another month, long after the response) from fading a glow out of a day
+  // that was never pending. Class only, on both edges: nothing here reads or
+  // writes geometry.
+  const [settleRequestKey, setSettleRequestKey] = useState<string | null>(null);
+  useEffect(() => {
+    if (!pending) return;
+    const timer = window.setTimeout(() => setSettleRequestKey(requestKey), 400);
+    return () => window.clearTimeout(timer);
+  }, [pending, requestKey]);
+  useEffect(() => {
+    if (pending || settleRequestKey !== requestKey) return;
+    const timer = window.setTimeout(() => setSettleRequestKey(null), 900);
+    return () => window.clearTimeout(timer);
+  }, [pending, requestKey, settleRequestKey]);
+  const settling = !pending && settleRequestKey === requestKey;
+
   useEffect(() => {
     if (!data) return;
     const noticeMs = data.minNoticeMinutes * 60_000 + 60_000;
@@ -375,6 +401,15 @@ export function SlotPicker(props: {
     }
     return out;
   }, [slotsByDay, timezone, nowMs]);
+
+  // The visitor's own civil today. A day BEFORE it can never become bookable,
+  // and the client knows that without asking the server, so those cells get no
+  // waiting mark. Marking them would be the one dishonest thing this treatment
+  // could do: it would promise a lookup for days that are simply over.
+  const todayKey = useMemo(() => {
+    const w = utcToWall(timezone, nowMs);
+    return formatCivilDate(w.year, w.month, w.day);
+  }, [timezone, nowMs]);
 
   // Derived, not synced: timezone changes can shift a chosen instant onto a
   // different civil day. Keep stage 3 attached to that instant's new day;
@@ -510,6 +545,28 @@ export function SlotPicker(props: {
   };
 
   /**
+   * The waiting wave travels the diagonals that actually carry a mark, not the
+   * 12 diagonals of the grid.
+   *
+   * Measured first as a plain (col + row) phase, and mid-month it visibly
+   * STOPPED for a full second every cycle: on the 14th, diagonals 0-4 are
+   * nothing but days already past, so the front spent a third of its journey
+   * crossing cells with nothing to light. Normalising to the first marked
+   * diagonal, and making the cycle exactly one step per marked diagonal, is
+   * what keeps the front continuous: it re-enters at the first marked cell in
+   * the frame it leaves the last one, in any month and on any day of it.
+   */
+  const markedDiagonals = month.weeks
+    .flat()
+    .map((cell, i) =>
+      hydrated && cell.inMonth && cell.key >= todayKey ? (i % 7) + Math.floor(i / 7) : -1
+    )
+    .filter((d) => d >= 0);
+  const waveFirst = markedDiagonals.length > 0 ? Math.min(...markedDiagonals) : 0;
+  const waveSpan =
+    markedDiagonals.length > 0 ? Math.max(...markedDiagonals) - waveFirst + 1 : 1;
+
+  /**
    * The ink fill behind the selected day/time is a shared layout element, so
    * changing the selection GLIDES the fill between cells. The prefix keeps
    * the mobile and desktop copies of the tree from cross-animating (both are
@@ -585,6 +642,9 @@ export function SlotPicker(props: {
           exit={reducedMotion ? undefined : { opacity: 0, x: navDir * -28 }}
           transition={fade}
           className="grid grid-cols-7 gap-1.5"
+          // One step per marked diagonal, so the wave's period is exactly its
+          // journey. Inherited by the cells rather than repeated 42 times.
+          style={hydrated ? ({ "--meet-cycle": `${waveSpan * 240}ms` } as CSSProperties) : undefined}
         >
           {month.weeks.flat().map((cell, i) => {
             const isActive = cell.key === activeDay;
@@ -595,10 +655,22 @@ export function SlotPicker(props: {
             // Gated on `hydrated` as well, because this reaches the DOM as an
             // inline transition-delay: ungated it emitted 0.036s from the
             // server and 0s on a reduced-motion client, 42 times over.
-            const wave =
-              hydrated && !reducedMotion
-                ? Math.min(((i % 7) + Math.floor(i / 7)) * 0.018, 0.22)
-                : 0;
+            const diagonal = (i % 7) + Math.floor(i / 7); // 0..11
+            const wave = hydrated && !reducedMotion ? Math.min(diagonal * 0.018, 0.22) : 0;
+            // The availability mark. Present for every in-month day that has
+            // not already passed, from hydration onward, and it is the SAME
+            // node while availability is unknown, once the day is known to be
+            // free, and once it is known to be empty: only opacity and scale
+            // differ between those three. See .meet-dot in globals.css.
+            //
+            // A day before the visitor's today can never become bookable and
+            // the client knows that without asking, so it gets no mark at all
+            // rather than a lookup it is not waiting for.
+            //
+            // Gated on `hydrated` for the usual reason: in-month, past and the
+            // diagonal index are all timezone-derived, and the index reaches
+            // the DOM as an inline custom property.
+            const marked = hydrated && cell.inMonth && cell.key >= todayKey;
             // Out-of-month cells are disabled buttons, not spans: keeping the
             // element type of all 42 cells constant from the server frame
             // through data arrival is what guarantees no remount and no
@@ -657,20 +729,27 @@ export function SlotPicker(props: {
                 >
                   {hydrated && cell.inMonth ? cell.dayNum : ""}
                 </span>
-                {bookable && !isActive ? (
-                  <motion.span
-                    aria-hidden
-                    // x rides the transform framer writes; a Tailwind
-                    // -translate-x-1/2 would be overwritten by the scale.
-                    initial={reducedMotion ? false : { opacity: 0, scale: 0.4, x: "-50%" }}
-                    animate={{ opacity: 1, scale: 1, x: "-50%" }}
-                    transition={
-                      reducedMotion
-                        ? { duration: 0 }
-                        : { duration: 0.28, ease: EASE_OUT_EXPO, delay: wave }
-                    }
-                    className="absolute bottom-1 left-1/2 h-1 w-1 rounded-full bg-accent/70"
-                  />
+                {marked ? (
+                  <>
+                    {/* The wait, and then the answer. Both are plain CSS, not
+                        framer: their whole life is opacity and transform on
+                        classes, and framer would make their first rendered
+                        frame depend on useReducedMotion(), which is read from
+                        matchMedia in the render body, which is the exact shape of the
+                        mismatch that shipped here last time. Both are present
+                        in every state, so the response arriving removes an
+                        animation and never a node. */}
+                    <span
+                      aria-hidden
+                      className="meet-halo"
+                      style={{ "--meet-p": String(diagonal - waveFirst) } as CSSProperties}
+                    />
+                    <span
+                      aria-hidden
+                      className={`meet-dot ${bookable && !isActive ? "meet-dot-on" : ""}`}
+                      style={{ "--meet-p": String(diagonal - waveFirst) } as CSSProperties}
+                    />
+                  </>
                 ) : null}
               </motion.button>
             );
@@ -826,7 +905,7 @@ export function SlotPicker(props: {
               transition={fade}
               aria-busy={pending || undefined}
               className={`mx-auto w-full max-w-[390px] rounded-lg border border-hairline bg-paper-raise p-4 ${
-                pending ? "meet-loading" : ""
+                pending ? "meet-seeking" : settling ? "meet-settling" : ""
               }`}
             >
               {renderCalendar("m")}
@@ -898,7 +977,7 @@ export function SlotPicker(props: {
             aria-busy={pending || undefined}
             className={`rounded-lg border border-hairline bg-paper-raise p-5 ${
               expanded ? "w-[320px]" : "mx-auto mt-6 w-[390px]"
-            } ${pending ? "meet-loading" : ""}`}
+            } ${pending ? "meet-seeking" : settling ? "meet-settling" : ""}`}
           >
             {renderCalendar("d")}
           </motion.div>

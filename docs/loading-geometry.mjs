@@ -77,7 +77,7 @@ for (const vp of viewports) {
       w: Math.round(r.width), h: Math.round(r.height),
       cellCount: cells.length,
       cell0: c0 ? { x: Math.round(c0.x), y: Math.round(c0.y), w: Math.round(c0.width) } : null,
-      sheen: el.className.includes("meet-loading"),
+      seeking: el.className.includes("meet-seeking"),
     };
   }, CARD);
 
@@ -95,7 +95,7 @@ for (const vp of viewports) {
       w: Math.round(r.width), h: Math.round(r.height),
       cellCount: cells.length,
       cell0: c0 ? { x: Math.round(c0.x), y: Math.round(c0.y), w: Math.round(c0.width) } : null,
-      sheen: el.className.includes("meet-loading"),
+      seeking: el.className.includes("meet-seeking"),
     };
   }, CARD);
 
@@ -114,8 +114,8 @@ for (const { vp, before, after, errors } of results) {
   const stable = d.x === 0 && d.y === 0 && d.w === 0 && d.h === 0 && cellDx === 0 && cellDy === 0;
   if (!stable) failed++;
   console.log(`\n${vp}:`);
-  console.log(`  pending  card ${before.w}x${before.h} @ (${before.x},${before.y}) cells=${before.cellCount} sheen=${before.sheen}`);
-  console.log(`  loaded   card ${after.w}x${after.h} @ (${after.x},${after.y}) cells=${after.cellCount} sheen=${after.sheen}`);
+  console.log(`  pending  card ${before.w}x${before.h} @ (${before.x},${before.y}) cells=${before.cellCount} seeking=${before.seeking}`);
+  console.log(`  loaded   card ${after.w}x${after.h} @ (${after.x},${after.y}) cells=${after.cellCount} seeking=${after.seeking}`);
   console.log(`  delta    x${d.x >= 0 ? "+" : ""}${d.x} y${d.y >= 0 ? "+" : ""}${d.y} w${d.w >= 0 ? "+" : ""}${d.w} h${d.h >= 0 ? "+" : ""}${d.h}  firstCell dx=${cellDx} dy=${cellDy}`);
   console.log(`  ${stable ? "STABLE" : "*** MOVED ***"}   console errors: ${errors.length}${errors.length ? " -> " + errors.join(" | ").slice(0, 200) : ""}`);
   if (errors.length) failed++;
