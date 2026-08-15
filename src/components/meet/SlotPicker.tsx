@@ -342,6 +342,11 @@ export function SlotPicker(props: {
     return () => window.clearTimeout(timer);
   }, [pending, requestKey, settleRequestKey]);
   const settling = !pending && settleRequestKey === requestKey;
+  // The same 400ms arming as the settle, reused rather than armed a second
+  // time. It is what keeps the undecided tone off a fast page: below 400ms the
+  // class is never applied, so a response that beats the halos never paints a
+  // tonal wobble either.
+  const waited = settleRequestKey === requestKey;
 
   useEffect(() => {
     if (!data) return;
@@ -682,6 +687,18 @@ export function SlotPicker(props: {
             // diagonal index are all timezone-derived, and the index reaches
             // the DOM as an inline custom property.
             const marked = hydrated && cell.inMonth && cell.key >= todayKey;
+            // While the request is in flight nothing has been ruled out yet, so
+            // a day we are still looking up must not wear the colour of a day
+            // with no times. Every cell used to render text-ink-faint during
+            // the wait, which is exactly that colour, and it is why a loading
+            // calendar read as a disabled one.
+            //
+            // Scoped to `marked`, so it covers exactly the days that carry a
+            // halo: a day already past is not undecided, it is over, and it
+            // stays faint. Arrival then splits the month in two, free days to
+            // full ink with a dot and the rest down to faint, which is the
+            // calendar visibly deciding rather than a dead grid coming alive.
+            const undecided = pending && waited && marked;
             // Out-of-month cells are disabled buttons, not spans: keeping the
             // element type of all 42 cells constant from the server frame
             // through data arrival is what guarantees no remount and no
@@ -721,7 +738,9 @@ export function SlotPicker(props: {
                     ? "font-semibold text-paper"
                     : bookable
                       ? "font-medium text-ink hover:bg-ink/[0.06]"
-                      : "cursor-default text-ink-faint"
+                      : undecided
+                        ? "cursor-default text-ink-soft"
+                        : "cursor-default text-ink-faint"
                 }`}
               >
                 {isActive ? (
