@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { Check, Copy } from "lucide-react";
+import { productCta } from "@/lib/meet/cta";
 import type { BookingView } from "@/lib/meet/types";
 import { BookingForm } from "@/components/meet/BookingForm";
 import { SlotPicker } from "@/components/meet/SlotPicker";
@@ -158,6 +159,7 @@ export default function MeetBooking({
     // the guard keeps any server prerender of this branch from crashing.
     const origin = typeof window === "undefined" ? "" : window.location.origin;
     const manageUrl = `${origin}/manage/${booking.manageToken}`;
+    const cta = productCta();
     return (
       <section aria-live="polite" className="w-full max-w-lg">
         <div className="rounded-lg border border-hairline bg-paper-raise p-6 sm:p-8">
@@ -217,6 +219,26 @@ export default function MeetBooking({
           </div>
 
           <p className="mt-6 text-sm text-ink-mute">A confirmation email is on its way.</p>
+
+          {/*
+            Optional operator-configured nudge (SITE.cta). Below the card's real
+            business (when, where, how to change it) and separated by a rule, so
+            it reads as a footnote rather than as part of the confirmation.
+          */}
+          {cta ? (
+            <div className="mt-6 border-t border-hairline pt-5">
+              <p className="text-xs font-medium text-ink-mute">{cta.lead}</p>
+              <p className="mt-1.5 text-sm text-ink-soft">{cta.body}</p>
+              <a
+                href={cta.href}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="link-draw mt-2.5 inline-block rounded-md text-sm font-medium text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+              >
+                {cta.linkLabel}
+              </a>
+            </div>
+          ) : null}
         </div>
       </section>
     );

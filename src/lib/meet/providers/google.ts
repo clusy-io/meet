@@ -1,5 +1,15 @@
 import "server-only";
-import { google, type calendar_v3 } from "googleapis";
+// Subpath imports, NOT the `googleapis` umbrella. The umbrella is a generated
+// index that eagerly requires all ~984 Google APIs: measured 476ms to load,
+// against 59ms for these two, and every one of those milliseconds landed on the
+// cold start of the availability route. Same objects, same behaviour: `auth`
+// here is the identical AuthPlus instance the umbrella exposes as `google.auth`.
+import {
+  auth as googleAuth,
+  calendar as calendarApi,
+  type calendar_v3,
+} from "googleapis/build/src/apis/calendar";
+import { oauth2 as oauth2Api } from "googleapis/build/src/apis/oauth2";
 import {
   ProviderAuthError,
   type BusyInterval,
@@ -13,10 +23,11 @@ import {
 /**
  * clusy/meet: Google Calendar provider.
  *
- * Stateless by design: every method builds a fresh OAuth2 client seeded with
- * the (decrypted) refresh token, and googleapis mints access tokens on demand.
- * A revoked grant surfaces as invalid_grant or a 401; both are normalized to
- * ProviderAuthError so callers can flip the account to "reauth_required".
+ * Every method works from the (decrypted) refresh token, through an OAuth2
+ * client reused per instance so the minted access token survives between calls
+ * (see the cache below). A revoked grant surfaces as invalid_grant or a 401;
+ * both are normalized to ProviderAuthError so callers can flip the account to
+ * "reauth_required".
  */
 
 const SCOPES = [
@@ -33,7 +44,7 @@ function newOAuthClient(redirectUri?: string, refreshToken?: string) {
   if (!clientId || !clientSecret) {
     throw new Error("meet: MEET_GOOGLE_CLIENT_ID / MEET_GOOGLE_CLIENT_SECRET are not set");
   }
-  const client = new google.auth.OAuth2({
+  const client = new googleAuth.OAuth2({
     clientId,
     clientSecret,
     redirectUri,
@@ -46,8 +57,49 @@ function newOAuthClient(redirectUri?: string, refreshToken?: string) {
   return client;
 }
 
+/* ------------------------------------------------------------------ */
+/* Access-token reuse                                                   */
+/* ------------------------------------------------------------------ */
+
+type GoogleOAuthClient = ReturnType<typeof newOAuthClient>;
+
+/**
+ * OAuth2 clients per lambda instance, keyed by refresh token.
+ *
+ * A fresh client starts with no access token, so googleapis mints one over the
+ * network before the first API call it makes. Building a new client per call
+ * therefore paid a token round trip on EVERY free-busy read, and availability
+ * reads every connected account at once. Reusing the client keeps the minted
+ * access token (googleapis stores it on the client and refreshes it when it
+ * expires), turning one mint per call into roughly one per hour per account.
+ *
+ * Keyed by the refresh token, so two accounts can never share a client, and a
+ * re-granted account arrives with a new token and so gets a new client. This
+ * caches an authorization credential, never calendar state: a revoked grant
+ * still surfaces on the next call as invalid_grant or 401 and is still
+ * normalized to ProviderAuthError.
+ */
+const oauthClientCache = new Map<string, GoogleOAuthClient>();
+const OAUTH_CLIENT_CACHE_MAX = 64;
+
 function calendarFor(refreshToken: string): calendar_v3.Calendar {
-  return google.calendar({ version: "v3", auth: newOAuthClient(undefined, refreshToken) });
+  let auth = oauthClientCache.get(refreshToken);
+  if (!auth) {
+    auth = newOAuthClient(undefined, refreshToken);
+    // Bounded so a rotating credential cannot grow this without limit; the
+    // live set is one entry per connected Google account.
+    if (oauthClientCache.size >= OAUTH_CLIENT_CACHE_MAX) {
+      const oldest = oauthClientCache.keys().next();
+      if (!oldest.done) oauthClientCache.delete(oldest.value);
+    }
+    oauthClientCache.set(refreshToken, auth);
+  }
+  return calendarApi({ version: "v3", auth });
+}
+
+/** Test hook: provider modules are process-global across Vitest cases. */
+export function __resetGoogleProviderState(): void {
+  oauthClientCache.clear();
 }
 
 /** Best-effort HTTP status from a gaxios/googleapis error shape. */
@@ -136,7 +188,7 @@ export const googleProvider: CalendarProvider = {
       let email = emailFromIdToken(tokens.id_token);
       if (!email) {
         client.setCredentials(tokens);
-        const { data } = await google.oauth2({ version: "v2", auth: client }).userinfo.get();
+        const { data } = await oauth2Api({ version: "v2", auth: client }).userinfo.get();
         email = typeof data.email === "string" && data.email.length > 0 ? data.email : null;
       }
       if (!email) throw new Error("google: could not resolve the account email");

@@ -32,10 +32,15 @@ invites, self-service reschedule and cancel, and 24-hour and 1-hour reminders.
 timeouts, honest degraded sync states, and truthful copy when no video link
 could be created.
 
+**A booking page that paints immediately.** The request for availability is
+issued while the HTML is still parsing rather than after hydration, and the
+calendar is drawn straight away and filled in when the answer arrives, in a box
+that does not change size.
+
 **Timezone-safe scheduling** on IANA zones with DST-aware slot arithmetic.
 
 **An admin console** for connecting accounts, choosing busy calendars,
-configuring each personal page, and reviewing bookings with live RSVPs.
+configuring each personal page, and reviewing bookings.
 
 **Accessible, responsive UI** with keyboard focus management, reduced-motion
 support, dark mode, and stable loading geometry.
@@ -186,8 +191,12 @@ OAuth scope, callback, and deployment check.
 ## Configuration
 
 Public branding lives in [`src/meet.config.ts`](src/meet.config.ts). Forks
-usually only edit that file and replace the images in `public/`. Everything
-else is environment-driven:
+usually only edit that file and replace the images in `public/`. That file also
+carries the one optional piece of copy: `SITE.cta`, a single line and link shown
+once a booking is confirmed, on the confirmation card and in the booker's email.
+It is absent by default, because a scheduler should not advertise anything its
+operator did not ask it to, and it never appears on cancellations, reschedules,
+reminders, or the team's copy. Everything else is environment-driven:
 
 | Group | Variables |
 | --- | --- |
@@ -252,7 +261,14 @@ broken by a fix to one of the others:
 ```bash
 MEET_MOCK_MODE=1 npm run dev
 node docs/slotpicker-invariants.mjs http://localhost:3000
+node docs/loading-geometry.mjs http://localhost:3000
 ```
+
+The first checks the time column and, in a second pass, that nothing mismatches
+during hydration under `prefers-reduced-motion`. Playwright emulates
+`no-preference` by default, so without that pass the suite reports green on the
+only path where such a bug cannot exist. The second measures the calendar card
+before and after availability arrives and fails if it moved.
 
 It needs `playwright-core` and a local Chrome build, taken ad hoc rather than
 carried as a dependency:

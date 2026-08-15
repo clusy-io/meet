@@ -3,6 +3,7 @@ import Image from "next/image";
 import Link from "next/link";
 import ThemeToggle from "@/components/ThemeToggle";
 import SiteFooter from "@/components/SiteFooter";
+import { AvailabilityPrime } from "@/components/meet/AvailabilityPrime";
 import MeetBooking from "@/components/meet/MeetBooking";
 import { SITE } from "@/meet.config";
 
@@ -26,6 +27,7 @@ export const metadata: Metadata = {
 export default function MeetPage() {
   return (
     <main className="flex min-h-screen flex-col bg-paper text-ink">
+      <AvailabilityPrime />
       <header className="flex items-center justify-between px-5 py-4 sm:px-8">
         <Link
           href={SITE.homepage}
