@@ -122,47 +122,207 @@ body {
   }
 }
 
-/* ===== booking page: the calendar is drawn before availability lands =====
-   One slow sweep across the card instead of 42 independent pulses. The class
-   is present only while pending, so once data arrives it leaves no positioned
-   ancestor, no overflow and no pseudo-element behind. That lifetime is what
-   keeps it clear of the time column's scroll invariants. */
-.meet-loading {
-  position: relative;
-  overflow: hidden;
-}
+/* ===== booking page: waiting for availability, not for the calendar =====
+   Every date on screen is already KNOWN while the request is in flight: the
+   visitor's own clock fixes them. Only which days are free is unknown, so the
+   waiting signal lives on the availability layer and nowhere else: one soft
+   mark per day, centred exactly where that day's availability dot will be.
 
-.meet-loading::after {
-  content: "";
+   Unknown is SOFT and wide (.meet-halo, a gradient with no edge anywhere);
+   known is a small hard point (.meet-dot, unchanged from the loaded calendar).
+   The two are a category apart, so a pending day can never be misread as a day
+   with times, and the arrival is one gesture: the glow contracts as the point
+   comes into focus, or contracts away to nothing on a day that has none.
+
+   Both layers only ever animate opacity and transform, and both are absolutely
+   positioned inside a cell that is already laid out, so nothing here can
+   reflow, and the arrival changes no geometry at all.
+
+   Why the numbers:
+     260ms   of silence before the first halo appears. Warm TTFB is ~340ms and
+             a response can beat 200ms; one that does never paints a frame of
+             this, and `settling` below is skipped as well, so a fast page has
+             no loading treatment to flash.
+     240ms   phase step per diagonal, over the SAME (col + row) diagonal the
+             dates and dots already arrive on. The wait and the arrival are the
+             same gesture at two speeds.
+     --meet-cycle
+             one step per MARKED diagonal (SlotPicker sets it), so the front
+             re-enters at the first marked cell in the frame it leaves the
+             last, and the wave never visibly restarts. A fixed 12-step cycle
+             was measured first and it stalls: on the 14th, diagonals 0-4 hold
+             nothing but days already past, and the grid sat still for a full
+             second of every cycle.
+     0.20    the breath floor, deliberately non-zero. A mark that reaches zero
+             empties whole regions of the month mid-cycle, which is the exact
+             "there is nothing here" reading this design exists to remove.
+
+   Chrome does NOT transition out of a removed animation. It jumps to the new
+   value in one frame (measured on this page: opacity 0.246 -> 0.700, no
+   interpolation). So every state change here is a one-shot ANIMATION rather
+   than a transition, and the settle's 0% sits mid-breath so the frame it takes
+   over on moves by at most ~0.13 for the cells at rest. `.meet-settling` is
+   what scopes it to the real arrival: a cell that MOUNTS already resolved
+   (paging to another month) must not fade a glow out of a day that was never
+   pending. */
+.meet-halo {
   position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 42%;
+  /* The dot's centre is 6px above the cell's bottom edge (bottom 0.25rem +
+     half of 0.25rem). 20px tall, so 6 - 10 = -4px puts the two concentric. */
+  bottom: -4px;
+  left: 50%;
+  height: 20px;
+  width: 20px;
+  border-radius: 9999px;
   pointer-events: none;
-  background: linear-gradient(90deg, transparent, hsl(var(--ink) / 0.06), transparent);
-  transform: translate3d(-120%, 0, 0);
-  /* 200ms of nothing first: a response that beats it never paints a single
-     frame. Transform only, so it stays on the compositor and cannot reflow. */
-  animation: meet-sheen 2000ms 200ms cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  background: radial-gradient(
+    circle at 50% 50%,
+    hsl(var(--accent) / 0.62),
+    hsl(var(--accent) / 0) 66%
+  );
+  /* At rest it does not exist visually: no mark on a resolved calendar, and
+     nothing to flash on a cell that mounts after the answer is in. */
+  opacity: 0;
+  transform: translateX(-50%) scale(0.55);
 }
 
-@keyframes meet-sheen {
+/* Waiting. Two animations, because one cannot both start from nothing and
+   loop from a non-zero floor: `wake` fades the glow in once with `both`, so
+   its backwards fill holds opacity 0 through the silence, and `seek` has NO
+   backwards fill, so the wake animation's forwards fill is what shows during
+   seek's longer delay. Their shared value at the hand-off is the floor, so it
+   is invisible. --meet-p is the cell's diagonal, counted from the first one
+   that carries a mark. */
+.meet-seeking .meet-halo {
+  animation:
+    meet-halo-wake 420ms var(--ease-out-expo) calc(260ms + var(--meet-p, 0) * 18ms) both,
+    meet-halo-seek var(--meet-cycle, 2640ms) ease-in-out calc(760ms + var(--meet-p, 0) * 240ms)
+      infinite;
+}
+
+@keyframes meet-halo-wake {
   from {
-    transform: translate3d(-120%, 0, 0);
+    opacity: 0;
+    transform: translateX(-50%) scale(0.5);
   }
 
   to {
-    transform: translate3d(340%, 0, 0);
+    opacity: 0.2;
+    transform: translateX(-50%) scale(0.72);
+  }
+}
+
+@keyframes meet-halo-seek {
+  0% {
+    opacity: 0.2;
+    transform: translateX(-50%) scale(0.72);
+  }
+
+  20% {
+    opacity: 0.56;
+    transform: translateX(-50%) scale(1);
+  }
+
+  48% {
+    opacity: 0.2;
+    transform: translateX(-50%) scale(0.72);
+  }
+
+  100% {
+    opacity: 0.2;
+    transform: translateX(-50%) scale(0.72);
+  }
+}
+
+/* The answer arrived and the wait was long enough to have been seen: the glow
+   contracts into the point on days that have times, and contracts away to
+   nothing on days that do not. Same animation either way; what differs is
+   whether a dot is left behind. */
+.meet-settling .meet-halo {
+  animation: meet-halo-settle 460ms var(--ease-out-expo) calc(var(--meet-p, 0) * 18ms) both;
+}
+
+@keyframes meet-halo-settle {
+  from {
+    opacity: 0.33;
+    transform: translateX(-50%) scale(0.86);
+  }
+
+  to {
+    opacity: 0;
+    transform: translateX(-50%) scale(0.4);
+  }
+}
+
+/* The availability dot itself: the loaded calendar's mark, unchanged. It is
+   invisible until this day is known to have times, and it grows into place on
+   the same diagonal while the glow above contracts: the point does not
+   replace the glow, it comes out of the middle of it.
+
+   One entrance in every case, deliberately. A second, `.meet-settling`-scoped
+   entrance was tried first and is a trap: when the settling window closes, the
+   more specific rule stops matching, the browser sees a different
+   animation-name on the same element and RESTARTS the ordinary entrance, so
+   every dot on the calendar blinks out and back a second after it arrived. */
+.meet-dot {
+  position: absolute;
+  bottom: 0.25rem;
+  left: 50%;
+  height: 0.25rem;
+  width: 0.25rem;
+  border-radius: 9999px;
+  pointer-events: none;
+  background: hsl(var(--accent));
+  opacity: 0;
+  transform: translateX(-50%) scale(0.4);
+}
+
+.meet-dot-on {
+  animation: meet-dot-arrive 320ms var(--ease-out-expo) calc(var(--meet-p, 0) * 18ms) both;
+}
+
+@keyframes meet-dot-arrive {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) scale(0.4);
+  }
+
+  to {
+    opacity: 0.7;
+    transform: translateX(-50%) scale(1);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  /* No sweep at all. The band is parked off-screen behind overflow:hidden, so
-     removing the animation leaves nothing visible rather than a frozen
-     highlight sitting over the grid. The wait is announced in text instead
-     (the caption appears immediately under reduced motion). */
-  .meet-loading::after {
+  /* Motionless, not slower. The glow simply IS there, uniformly, at the
+     breath's midpoint, and the answer replaces it with no travel at all. The
+     1ms duration is a single-frame state change on a delay, not a fade: the
+     delay exists only so the "never flash a fast response" guard still holds.
+     The wait is announced in words on this path too, since the caption appears
+     immediately under reduced motion. */
+  .meet-seeking .meet-halo {
+    animation: meet-halo-hold 1ms 260ms linear both;
+  }
+
+  .meet-settling .meet-halo {
     animation: none;
+  }
+
+  .meet-dot-on {
+    animation: none;
+    opacity: 0.7;
+    transform: translateX(-50%) scale(1);
+  }
+}
+
+@keyframes meet-halo-hold {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) scale(0.86);
+  }
+
+  to {
+    opacity: 0.3;
+    transform: translateX(-50%) scale(0.86);
   }
 }
