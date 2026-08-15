@@ -203,6 +203,62 @@ check(
   `scrollTop ${scrolled} -> ${s.scrollTop}`
 );
 
+/*
+ * 5. The selection highlight only ever lands on a cell that has a date.
+ *
+ * A month grid's leading and trailing cells carry the REAL keys of the adjacent
+ * month, so August's sixth row holds "2026-09-01". Matching a selection on key
+ * alone therefore lights an out-of-month cell, and since those cells draw no
+ * number, the ink pill renders as a black square floating in an empty slot. It
+ * also puts one layoutId on two mounted elements during a month transition.
+ *
+ * The DIRECTION matters and is the whole check. Paging FORWARD with a mid-month
+ * selection proves nothing: the next month's leading cells hold the last days
+ * of this one, which a mid-month selection never matches, so the buggy build
+ * passes. The discriminating sequence is to select an EARLY day of the next
+ * month and page BACK to find it sitting in the previous month's trailing row.
+ */
+const clickVisible = (selector) =>
+  page.evaluate((sel) => {
+    const node = [...document.querySelectorAll(sel)].find((n) => n.getClientRects().length > 0);
+    if (node) node.click();
+  }, selector);
+
+await clickVisible('button[aria-label="Next month"]');
+await page.waitForTimeout(900);
+const pickedNext = await page.evaluate(() => {
+  const node = [...document.querySelectorAll('button[aria-label*="available"]:not([disabled])')].find(
+    (n) => n.getClientRects().length > 0
+  );
+  if (!node) return null;
+  node.click();
+  return node.getAttribute("aria-label");
+});
+await page.waitForTimeout(900);
+await clickVisible('button[aria-label="Previous month"]');
+await page.waitForTimeout(1200);
+
+const strays = await page.evaluate(() => {
+  const out = [];
+  for (const btn of document.querySelectorAll("button")) {
+    if (!btn.className.includes("aspect-square")) continue;
+    if (btn.getBoundingClientRect().width === 0) continue;
+    // The pill is the absolutely-positioned fill inside a day cell.
+    if (!btn.querySelector("span.absolute.inset-0")) continue;
+    if ((btn.textContent || "").trim() === "") out.push(btn.getAttribute("aria-label") ?? "(unlabelled)");
+  }
+  return out;
+});
+check(
+  "no selection pill on a cell with no date",
+  pickedNext !== null && strays.length === 0,
+  pickedNext === null
+    ? "could not select a day in the next month, so this proved nothing"
+    : strays.length
+      ? `${strays.length} stray after selecting ${pickedNext}`
+      : `selected ${pickedNext}, paged back`
+);
+
 check("no console errors", consoleErrors.length === 0, consoleErrors.join(" ~ ").slice(0, 160));
 
 /*
