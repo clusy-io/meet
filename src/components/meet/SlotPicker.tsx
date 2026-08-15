@@ -647,7 +647,18 @@ export function SlotPicker(props: {
           style={hydrated ? ({ "--meet-cycle": `${waveSpan * 240}ms` } as CSSProperties) : undefined}
         >
           {month.weeks.flat().map((cell, i) => {
-            const isActive = cell.key === activeDay;
+            // `inMonth` is load-bearing, not decoration. A grid's leading and
+            // trailing cells carry the REAL keys of the adjacent month, so
+            // August's sixth row holds "2026-09-01": without this check that
+            // cell matches a September selection and renders the ink pill, as a
+            // black square on a cell that draws no number. It stayed hidden
+            // while out-of-month cells were plain spans and appeared the moment
+            // all 42 became buttons.
+            //
+            // It also keeps the layoutId unique. During a month transition both
+            // months are briefly mounted, so the same selection could otherwise
+            // claim the pill twice and framer would fly it between the two.
+            const isActive = cell.inMonth && cell.key === activeDay;
             const bookable = hydrated && cell.inMonth && cell.slotCount > 0;
             // One diagonal wave from the top-left rather than 42 independent
             // events, so the calendar reads as a single thing filling in.
