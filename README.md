@@ -39,8 +39,9 @@ that does not change size.
 
 **Timezone-safe scheduling** on IANA zones with DST-aware slot arithmetic.
 
-**An admin console** for connecting accounts, choosing busy calendars,
-configuring each personal page, and reviewing bookings.
+**A private scheduling workspace** with a next-up view, date-grouped agenda,
+search and filters, expandable reschedule history, calendar health, per-member
+busy-calendar controls, and a live-preview editor for every personal page.
 
 **Accessible, responsive UI** with keyboard focus management, reduced-motion
 support, dark mode, and stable loading geometry.

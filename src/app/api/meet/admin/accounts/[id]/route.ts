@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireAdmin } from "@/lib/meet/admin";
+import { invalidateAvailabilityCache } from "@/lib/meet/availability";
 import { getMeetConfig } from "@/lib/meet/config";
 import { ensureMockReady } from "@/lib/meet/mock";
 import { hasTrustedMutationOrigin } from "@/lib/meet/requestSecurity";
@@ -37,6 +38,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
     return NextResponse.json({ message: "account not found" }, { status: 404 });
   }
   await store.updateAccount(id, { selectedCalendars: parsed.data.selectedCalendars });
+  invalidateAvailabilityCache();
   return NextResponse.json({ ok: true });
 }
 
@@ -67,5 +69,6 @@ export async function DELETE(request: Request, { params }: RouteContext) {
     );
   }
   await store.deleteAccount(id);
+  invalidateAvailabilityCache();
   return NextResponse.json({ ok: true });
 }
