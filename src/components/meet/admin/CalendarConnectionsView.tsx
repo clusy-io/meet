@@ -1,18 +1,9 @@
 "use client";
 
-import {
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   AlertTriangle,
-  CalendarCheck2,
   ChevronDown,
-  CircleCheck,
-  Cloud,
   ExternalLink,
   Plus,
   RefreshCw,
@@ -66,58 +57,33 @@ export function CalendarConnectionsView({
   );
   const hasAttention =
     attentionMembers.length > 0 || attentionAccounts.length > 0;
-  const selectedCount = overview.accounts.reduce(
-    (total, account) =>
-      total + (account.status === "ok" ? account.selectedCalendars.length : 0),
-    0,
-  );
-
   return (
-    <div className="space-y-6">
-      <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+    <div>
+      <header className="flex flex-col gap-5 border-b border-hairline pb-7 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-ink-faint">
-            Availability inputs
-          </p>
-          <h2 className="mt-2 font-serif-display text-3xl tracking-tight sm:text-4xl">
-            Calendar connections
+          <h2 className="font-serif-display text-4xl font-bold tracking-[-0.045em] sm:text-5xl">
+            Calendars
           </h2>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-ink-mute">
-            Choose which calendars make each teammate busy. A connection is
-            ready when its account is healthy and at least one calendar is
-            selected.
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-ink-mute">
+            Choose which calendars make each teammate busy and keep every host
+            ready to take a booking.
           </p>
         </div>
-        <div className="inline-flex items-center gap-2 self-start rounded-full border border-hairline bg-paper-raise px-3 py-1.5 text-xs text-ink-mute sm:self-auto">
-          <ShieldCheck className="h-3.5 w-3.5 text-status-ok" aria-hidden />
-          OAuth credentials stay server-side
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-mute">
+          <span>
+            {readyMembers.length}/{overview.members.length} people ready
+          </span>
+          <span aria-hidden className="text-hairline-strong">
+            /
+          </span>
+          <span>{overview.accounts.length} connected accounts</span>
         </div>
       </header>
-
-      <div className="grid grid-cols-3 gap-2 sm:gap-3">
-        <HealthMetric
-          icon={<CircleCheck className="h-4 w-4" />}
-          label="People ready"
-          value={`${readyMembers.length}/${overview.members.length}`}
-          tone={readyMembers.length === overview.members.length ? "ok" : "warn"}
-        />
-        <HealthMetric
-          icon={<Cloud className="h-4 w-4" />}
-          label="Accounts"
-          value={String(overview.accounts.length)}
-        />
-        <HealthMetric
-          icon={<CalendarCheck2 className="h-4 w-4" />}
-          label="Calendars watched"
-          value={String(selectedCount)}
-          tone={hasAttention ? "warn" : "default"}
-        />
-      </div>
 
       {hasAttention && (
         <div
           role="status"
-          className="flex items-start gap-3 rounded-2xl border border-status-warn/30 bg-status-warn/5 px-4 py-3.5 text-sm leading-6 text-ink-soft"
+          className="mt-7 flex items-start gap-3 border-l-2 border-status-warn bg-status-warn/[0.035] px-4 py-3.5 text-sm leading-6 text-ink-soft"
         >
           <AlertTriangle
             className="mt-1 h-4 w-4 shrink-0 text-status-warn"
@@ -136,7 +102,7 @@ export function CalendarConnectionsView({
         </div>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="mt-8 divide-y divide-hairline border-y border-hairline">
         {overview.members.map((member) => (
           <MemberCalendarCard
             key={member.key}
@@ -151,40 +117,9 @@ export function CalendarConnectionsView({
           />
         ))}
       </div>
-    </div>
-  );
-}
-
-function HealthMetric({
-  icon,
-  label,
-  value,
-  tone = "default",
-}: {
-  icon: ReactNode;
-  label: string;
-  value: string;
-  tone?: "default" | "ok" | "warn";
-}) {
-  const toneClass =
-    tone === "ok"
-      ? "text-status-ok"
-      : tone === "warn"
-        ? "text-status-warn"
-        : "text-ink-soft";
-
-  return (
-    <div className="min-w-0 rounded-2xl border border-hairline bg-paper-raise px-3 py-3 shadow-[0_1px_0_hsl(var(--ink)_/_0.025)] sm:px-4 sm:py-4">
-      <div
-        className={`flex flex-col items-start gap-1 sm:flex-row sm:items-center sm:gap-2 ${toneClass}`}
-      >
-        {icon}
-        <span className="text-[10px] font-medium leading-4 text-ink-mute sm:text-xs">
-          {label}
-        </span>
-      </div>
-      <p className="mt-2 font-mono text-xl tracking-tight text-ink sm:text-2xl">
-        {value}
+      <p className="mt-5 flex items-center gap-2 text-xs leading-5 text-ink-faint">
+        <ShieldCheck className="h-3.5 w-3.5 text-status-ok" aria-hidden />
+        OAuth credentials stay encrypted and server-side.
       </p>
     </div>
   );
@@ -213,8 +148,8 @@ function MemberCalendarCard({
   );
 
   return (
-    <section className="overflow-hidden rounded-2xl border border-hairline bg-paper-raise shadow-[0_8px_28px_hsl(var(--ink)_/_0.035)]">
-      <div className="flex items-start justify-between gap-3 border-b border-hairline px-4 py-4 sm:gap-4 sm:px-5">
+    <section className="overflow-hidden bg-paper-raise/35">
+      <div className="flex items-start justify-between gap-3 px-1 py-5 sm:gap-4 sm:px-4">
         <div className="flex min-w-0 items-center gap-3">
           <span
             aria-hidden
@@ -238,18 +173,18 @@ function MemberCalendarCard({
           </div>
         </div>
         <span
-          className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium ${
-            ready
-              ? "border-status-ok/25 bg-status-ok/5 text-status-ok"
-              : "border-status-warn/30 bg-status-warn/5 text-status-warn"
-          }`}
+          className={`inline-flex shrink-0 items-center gap-1.5 text-[11px] font-medium ${ready ? "text-status-ok" : "text-status-warn"}`}
         >
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${ready ? "bg-status-ok" : "bg-status-warn"}`}
+            aria-hidden
+          />
           {ready ? "Ready" : "Needs setup"}
         </span>
       </div>
 
       {accounts.length > 0 ? (
-        <ul className="divide-y divide-hairline">
+        <ul className="divide-y divide-hairline border-t border-hairline">
           {accounts.map((account) => (
             <AccountRow
               key={account.id}
@@ -261,13 +196,13 @@ function MemberCalendarCard({
           ))}
         </ul>
       ) : (
-        <div className="px-4 py-6 text-sm leading-6 text-ink-mute sm:px-5">
+        <div className="border-t border-hairline px-4 py-6 text-sm leading-6 text-ink-mute sm:px-5">
           Connect a work calendar so this teammate can appear in available
           meeting slots.
         </div>
       )}
 
-      <div className="flex flex-wrap gap-2 border-t border-hairline bg-paper/55 px-4 py-4 sm:px-5">
+      <div className="flex flex-wrap gap-2 border-t border-hairline px-4 py-4 sm:px-5">
         {mockMode ? (
           <p className="text-xs leading-5 text-ink-mute">
             Account connections are disabled while mock calendars are active.
@@ -390,10 +325,12 @@ function AccountRow({
   // has renamed a calendar.
   const selection = (calendars ?? [])
     .filter((calendar) => checked.has(calendar.id))
-    .map((calendar): SelectedCalendar => ({
-      id: calendar.id,
-      name: calendar.name,
-    }));
+    .map(
+      (calendar): SelectedCalendar => ({
+        id: calendar.id,
+        name: calendar.name,
+      }),
+    );
   const tooMany = selection.length > MAX_SELECTED_CALENDARS;
   const maxReached = selection.length >= MAX_SELECTED_CALENDARS;
   const changed =
@@ -503,8 +440,8 @@ function AccountRow({
             )}
           </span>
           <span className="mt-1 block truncate text-xs text-ink-mute">
-            {providerName(account.provider)} · {account.selectedCalendars.length}{" "}
-            selected
+            {providerName(account.provider)} ·{" "}
+            {account.selectedCalendars.length} selected
           </span>
         </span>
         <ChevronDown
@@ -537,7 +474,9 @@ function AccountRow({
 
           {account.status === "reauth_required" && (
             <div className="mt-4 flex flex-col items-start gap-3 rounded-lg border border-status-warn/25 bg-status-warn/5 px-3 py-3 text-xs leading-5 text-ink-soft sm:flex-row sm:items-center sm:justify-between">
-              <span>The provider session expired. Reconnect to restore it.</span>
+              <span>
+                The provider session expired. Reconnect to restore it.
+              </span>
               <a
                 href={reconnectHref(account)}
                 className="inline-flex min-h-9 shrink-0 items-center gap-2 rounded-lg border border-status-warn/35 bg-paper-raise px-3 font-medium text-status-warn focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-status-warn/40"
