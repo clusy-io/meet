@@ -7,6 +7,7 @@ import {
   groupScheduleBookings,
   hostLabel,
   nextBooking,
+  resolveScheduleDisplayTimezone,
   scheduleCounts,
   type ScheduleFilters,
 } from "@/components/meet/admin/schedule";
@@ -54,7 +55,7 @@ const DEFAULT_FILTERS: ScheduleFilters = {
 };
 
 describe("admin schedule helpers", () => {
-  it("groups instants by the host's civil date", () => {
+  it("groups instants by the selected display timezone's civil date", () => {
     expect(civilDateKey("2026-09-01T00:30:00.000Z", "America/Los_Angeles"))
       .toBe("2026-08-31");
     expect(civilDateKey("2026-09-01T00:30:00.000Z", "Asia/Tokyo"))
@@ -159,7 +160,7 @@ describe("admin schedule helpers", () => {
     expect(visible.history).toEqual(history);
   });
 
-  it("calculates host-local headline counts and excludes cancellations", () => {
+  it("calculates display-local headline counts and excludes cancellations", () => {
     const rows = [
       booking("today", "2026-09-01T23:30:00.000Z"),
       booking("day-six", "2026-09-07T15:00:00.000Z", {
@@ -175,6 +176,21 @@ describe("admin schedule helpers", () => {
       nextSevenDays: 2,
       needsAttention: 1,
     });
+  });
+
+  it("moves Today with the viewer across a civil-date boundary", () => {
+    const boundaryNow = Date.parse("2026-09-01T00:15:00.000Z");
+    const priorEvening = booking(
+      "prior-evening",
+      "2026-08-31T20:00:00.000Z",
+    );
+
+    expect(
+      scheduleCounts([priorEvening], "America/Los_Angeles", boundaryNow).today,
+    ).toBe(1);
+    expect(
+      scheduleCounts([priorEvening], "Europe/London", boundaryNow).today,
+    ).toBe(0);
   });
 
   it("does not count or filter meetings that already ended today as next 7 days", () => {
@@ -208,5 +224,20 @@ describe("admin schedule helpers", () => {
       { dateKey: "2026-09-01", bookings: [first, second] },
       { dateKey: "2026-09-02", bookings: [tomorrow] },
     ]);
+  });
+
+  it("prefers the browser timezone and falls back safely", () => {
+    expect(
+      resolveScheduleDisplayTimezone(
+        "Europe/London",
+        "America/Los_Angeles",
+      ),
+    ).toBe("Europe/London");
+    expect(resolveScheduleDisplayTimezone(null, "Asia/Tokyo")).toBe(
+      "Asia/Tokyo",
+    );
+    expect(resolveScheduleDisplayTimezone("Mars/Olympus", "Also/Invalid")).toBe(
+      "UTC",
+    );
   });
 });
