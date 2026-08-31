@@ -1,85 +1,35 @@
 "use client";
 
-import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { ChevronDown, X } from "lucide-react";
-import type { CalendarProviderId, Member, SelectedCalendar } from "@/lib/meet/types";
-
-/**
- * /admin surface: connect Google and Outlook accounts per member, pick
- * which calendars count as busy, disconnect accounts, and read the bookings
- * that config produced. Talks to /api/meet/* only; server-only modules stay
- * out of the client bundle.
- *
- * Calendar config is a set-up-once thing, so it opens folded (its header
- * still carries the counts and any reconnect warning); the day-to-day view
- * is the meetings list underneath it.
- */
-
-interface AdminAccount {
-  id: string;
-  memberKey: string;
-  provider: CalendarProviderId;
-  email: string;
-  selectedCalendars: SelectedCalendar[];
-  status: "ok" | "reauth_required";
-  createdAt: string;
-}
-
-interface AdminOverview {
-  members: Member[];
-  quorum: number;
-  hostTimezone: string;
-  window: { start: string; end: string };
-  accounts: AdminAccount[];
-  /** True when the server runs on fake in-memory calendars (MEET_MOCK_MODE). */
-  mockMode: boolean;
-}
-
-interface CalendarEntry {
-  id: string;
-  name: string;
-  primary: boolean;
-}
-
-/** One row of GET /api/meet/admin/bookings. */
-interface AdminBooking {
-  id: string;
-  startAt: string;
-  endAt: string;
-  durationMinutes: number;
-  name: string;
-  email: string;
-  /** Extra addresses the booker invited; they get the calendar invite. */
-  guests: string[];
-  notes: string | null;
-  timezone: string;
-  attendeeMemberKeys: string[];
-  meetingUrl: string | null;
-  status: "confirmed" | "cancelled";
-  syncStatus: "synced" | "partial" | "failed";
-  rescheduleCount: number;
-  remindersSent: string[];
-  manageUrl: string;
-  createdAt: string;
-  cancelledAt: string | null;
-}
-
-interface BookingsResponse {
-  hostTimezone: string;
-  members: Member[];
-  bookings: AdminBooking[];
-}
+import {
+  useCallback,
+  useEffect,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from "react";
+import {
+  AlertTriangle,
+  ArrowUpRight,
+  CalendarClock,
+  CalendarDays,
+  CheckCircle2,
+  Clock3,
+  KeyRound,
+  Link2,
+  LoaderCircle,
+  Settings2,
+  ShieldCheck,
+  Users,
+  X,
+} from "lucide-react";
+import ThemeToggle from "@/components/ThemeToggle";
+import { BookingPagesView } from "./admin/BookingPagesView";
+import { CalendarConnectionsView } from "./admin/CalendarConnectionsView";
+import { ScheduleView } from "./admin/ScheduleView";
+import type { AdminOverview, AdminWorkspaceView } from "./admin/types";
 
 type Phase = "loading" | "unauthed" | "ready" | "failed";
 
-const PRIMARY_BUTTON =
-  "rounded-md bg-ink px-4 py-2 text-sm font-medium text-paper transition-opacity hover:opacity-90 disabled:opacity-50";
-const SUBTLE_BUTTON =
-  "rounded-md border border-hairline px-3 py-1.5 text-sm text-ink-soft transition-colors hover:border-hairline-strong";
-
-const MAX_SELECTED_CALENDARS = 20;
-
-/** ?error= codes from the OAuth start and callback routes, mapped to copy. */
 const OAUTH_ERROR_MESSAGES: Record<string, string> = {
   state_expired: "The connect link expired. Start the connection again.",
   no_refresh_token:
@@ -88,50 +38,105 @@ const OAUTH_ERROR_MESSAGES: Record<string, string> = {
   unauthorized: "The admin session expired. Sign in and try connecting again.",
   bad_provider: "That connect link points at an unknown calendar provider.",
   bad_member: "That connect link points at an unknown team member.",
-  config_missing: "The provider's OAuth credentials are not configured on the server.",
+  config_missing:
+    "The provider's OAuth credentials are not configured on the server.",
 };
+
+const NAV_ITEMS: Array<{
+  id: AdminWorkspaceView;
+  label: string;
+  description: string;
+  icon: typeof CalendarDays;
+}> = [
+  {
+    id: "schedule",
+    label: "Schedule",
+    description: "Upcoming calls and history",
+    icon: CalendarDays,
+  },
+  {
+    id: "pages",
+    label: "Booking pages",
+    description: "Copy, availability and alerts",
+    icon: Settings2,
+  },
+  {
+    id: "calendars",
+    label: "Calendars",
+    description: "Connections and busy time",
+    icon: Link2,
+  },
+];
+
+function viewFromHash(hash: string): AdminWorkspaceView {
+  const value = hash.replace(/^#/, "");
+  return value === "pages" || value === "calendars" ? value : "schedule";
+}
 
 export function AdminPanel() {
   const [phase, setPhase] = useState<Phase>("loading");
   const [overview, setOverview] = useState<AdminOverview | null>(null);
-  const [banner, setBanner] = useState<{ tone: "ok" | "warn"; text: string } | null>(null);
-  const [configOpen, setConfigOpen] = useState(false);
+  const [activeView, setActiveView] = useState<AdminWorkspaceView>("schedule");
+  const [banner, setBanner] = useState<{
+    tone: "ok" | "warn";
+    text: string;
+  } | null>(null);
 
-  // The OAuth callback lands here with ?connected= or ?error=; read once and
-  // clean the URL so a refresh does not resurrect the banner.
   useEffect(() => {
-    const timer = window.setTimeout(() => {
+    const syncInitialView = window.requestAnimationFrame(() => {
+      setActiveView(viewFromHash(window.location.hash));
+    });
+    const handleHashChange = () => {
+      setActiveView(viewFromHash(window.location.hash));
+      window.scrollTo({ top: 0, behavior: "auto" });
+    };
+    window.addEventListener("hashchange", handleHashChange);
+    return () => {
+      window.cancelAnimationFrame(syncInitialView);
+      window.removeEventListener("hashchange", handleHashChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    const syncOAuthResult = window.requestAnimationFrame(() => {
       const search = new URLSearchParams(window.location.search);
       const connected = search.get("connected");
       const error = search.get("error");
       if (connected) {
         setBanner({ tone: "ok", text: `Connected ${connected}.` });
+        setActiveView("calendars");
       } else if (error) {
         setBanner({
           tone: "warn",
-          text: OAUTH_ERROR_MESSAGES[error] ?? "Connecting the account failed. Try again.",
+          text:
+            OAUTH_ERROR_MESSAGES[error] ??
+            "Connecting the account failed. Try again.",
         });
+        setActiveView("calendars");
       }
       if (connected || error) {
-        // Coming back from a connect attempt, successful or not, means the
-        // visitor is mid-setup: unfold the config they were working in.
-        setConfigOpen(true);
-        window.history.replaceState(null, "", window.location.pathname);
+        window.history.replaceState(
+          null,
+          "",
+          `${window.location.pathname}#calendars`,
+        );
       }
-    }, 0);
-    return () => window.clearTimeout(timer);
+    });
+    return () => window.cancelAnimationFrame(syncOAuthResult);
   }, []);
 
   const fetchOverview = useCallback(async () => {
     try {
-      const res = await fetch("/api/meet/admin/accounts", { cache: "no-store" });
-      if (res.status === 401) {
+      const response = await fetch("/api/meet/admin/accounts", {
+        cache: "no-store",
+      });
+      if (response.status === 401) {
+        setOverview(null);
         setPhase("unauthed");
         return;
       }
-      if (!res.ok) throw new Error(`status ${res.status}`);
-      const data = (await res.json()) as AdminOverview;
-      setOverview(data);
+      if (!response.ok) throw new Error(`status ${response.status}`);
+      setOverview((await response.json()) as AdminOverview);
       setPhase("ready");
     } catch {
       setPhase("failed");
@@ -139,36 +144,39 @@ export function AdminPanel() {
   }, []);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => void fetchOverview(), 0);
-    return () => window.clearTimeout(timer);
+    const initialLoad = window.requestAnimationFrame(() => {
+      void fetchOverview();
+    });
+    return () => window.cancelAnimationFrame(initialLoad);
   }, [fetchOverview]);
 
-  const handleAccountUpdate = useCallback((id: string, patch: Partial<AdminAccount>) => {
-    setOverview((prev) =>
-      prev
-        ? { ...prev, accounts: prev.accounts.map((a) => (a.id === id ? { ...a, ...patch } : a)) }
-        : prev
-    );
+  const handleUnauthorized = useCallback(() => {
+    setOverview(null);
+    setPhase("unauthed");
+    setBanner({
+      tone: "warn",
+      text: "Your admin session expired. Sign in to continue.",
+    });
   }, []);
 
-  const handleAccountDelete = useCallback((id: string) => {
-    setOverview((prev) =>
-      prev ? { ...prev, accounts: prev.accounts.filter((a) => a.id !== id) } : prev
+  const selectView = (view: AdminWorkspaceView) => {
+    setActiveView(view);
+    window.history.replaceState(
+      null,
+      "",
+      `${window.location.pathname}#${view}`,
     );
-  }, []);
+    window.scrollTo({ top: 0, behavior: "auto" });
+  };
 
-  if (phase === "loading") {
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-paper text-ink">
-        <p className="text-sm text-ink-mute">Loading...</p>
-      </main>
-    );
-  }
+  if (phase === "loading") return <AdminLoading />;
 
   if (phase === "unauthed") {
     return (
       <LoginCard
+        banner={banner}
         onAuthed={() => {
+          setBanner(null);
           setPhase("loading");
           void fetchOverview();
         }}
@@ -178,809 +186,313 @@ export function AdminPanel() {
 
   if (phase === "failed" || !overview) {
     return (
-      <main className="flex min-h-screen items-center justify-center bg-paper px-5 text-ink">
-        <div className="w-full max-w-sm rounded-lg border border-hairline bg-paper-raise p-6 text-center">
-          <p className="text-sm text-ink-mute">Could not load the admin data.</p>
-          <button
-            type="button"
-            className={`${SUBTLE_BUTTON} mt-4`}
-            onClick={() => {
-              setPhase("loading");
-              void fetchOverview();
-            }}
-          >
-            Retry
-          </button>
-        </div>
-      </main>
+      <AdminLoadError
+        onRetry={() => {
+          setPhase("loading");
+          void fetchOverview();
+        }}
+      />
     );
   }
 
+  const healthyMembers = overview.members.filter((member) =>
+    overview.accounts.some(
+      (account) =>
+        account.memberKey === member.key &&
+        account.status === "ok" &&
+        account.selectedCalendars.length > 0,
+    ),
+  ).length;
+
   return (
     <main className="min-h-screen bg-paper text-ink">
-      <div className="mx-auto max-w-2xl px-5 py-16 sm:py-20">
+      <header className="sticky top-0 z-40 border-b border-hairline bg-paper/90 backdrop-blur-xl">
+        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="flex h-16 items-center justify-between gap-4">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-ink text-paper shadow-[0_6px_20px_hsl(var(--ink)_/_0.12)]">
+                <CalendarClock className="h-4 w-4" aria-hidden />
+              </div>
+              <div className="min-w-0">
+                <h1 className="flex items-center gap-2">
+                  <span className="font-serif-display text-lg tracking-tight">
+                    Meet
+                  </span>
+                  <span className="rounded-full border border-hairline bg-paper-raise px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.14em] text-ink-faint">
+                    Admin
+                  </span>
+                </h1>
+                <p className="hidden truncate text-[11px] text-ink-mute sm:block">
+                  Scheduling workspace
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1 sm:gap-2">
+              <div className="mr-1 hidden items-center gap-2 rounded-full border border-hairline bg-paper-raise px-3 py-1.5 text-xs text-ink-mute md:flex">
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    healthyMembers === overview.members.length
+                      ? "bg-status-ok"
+                      : "bg-status-warn"
+                  }`}
+                  aria-hidden
+                />
+                {healthyMembers}/{overview.members.length} calendars ready
+              </div>
+              <a
+                href="/"
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Open team booking page in a new tab"
+                title="Open team booking page"
+                className="inline-flex h-10 w-10 items-center justify-center gap-1.5 rounded-xl text-sm text-ink-mute transition hover:bg-paper-raise hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 sm:w-auto sm:px-3"
+              >
+                <span className="hidden sm:inline">Open booking page</span>
+                <ArrowUpRight className="h-3.5 w-3.5" aria-hidden />
+              </a>
+              <ThemeToggle className="h-10! w-10! rounded-xl! hover:bg-paper-raise!" />
+            </div>
+          </div>
+
+          <nav
+            aria-label="Meeting admin"
+            className="-mb-px flex gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          >
+            {NAV_ITEMS.map((item) => {
+              const selected = item.id === activeView;
+              const Icon = item.icon;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  aria-current={selected ? "page" : undefined}
+                  onClick={() => selectView(item.id)}
+                  className={`group relative flex min-h-12 shrink-0 items-center gap-2.5 rounded-t-xl px-3.5 text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/50 sm:px-4 ${
+                    selected
+                      ? "text-ink"
+                      : "text-ink-mute hover:bg-paper-raise/60 hover:text-ink-soft"
+                  }`}
+                >
+                  <Icon
+                    className={`h-4 w-4 ${selected ? "text-accent" : "text-ink-faint"}`}
+                    aria-hidden
+                  />
+                  <span className="font-medium">{item.label}</span>
+                  <span className="sr-only">— {item.description}</span>
+                  {selected && (
+                    <span
+                      className="absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-accent"
+                      aria-hidden
+                    />
+                  )}
+                </button>
+              );
+            })}
+          </nav>
+        </div>
+      </header>
+
+      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8 lg:px-8 lg:py-10">
         {banner && (
-          <div className="mb-6 flex items-start justify-between gap-3 rounded-lg border border-hairline bg-paper-raise px-4 py-3">
-            <p
-              className={`text-sm ${banner.tone === "ok" ? "text-status-ok" : "text-status-warn"}`}
-            >
-              {banner.text}
-            </p>
+          <div
+            role="status"
+            className={`mb-6 flex items-start justify-between gap-4 rounded-2xl border px-4 py-3.5 text-sm ${
+              banner.tone === "ok"
+                ? "border-status-ok/25 bg-status-ok/5 text-status-ok"
+                : "border-status-warn/30 bg-status-warn/5 text-status-warn"
+            }`}
+          >
+            <div className="flex items-start gap-2.5">
+              {banner.tone === "ok" ? (
+                <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              ) : (
+                <AlertTriangle
+                  className="mt-0.5 h-4 w-4 shrink-0"
+                  aria-hidden
+                />
+              )}
+              <p>{banner.text}</p>
+            </div>
             <button
               type="button"
-              aria-label="Dismiss"
-              className="mt-0.5 shrink-0 text-ink-faint transition-colors hover:text-ink-soft"
+              aria-label="Dismiss notification"
+              className="shrink-0 rounded-md p-1 opacity-65 transition hover:bg-current/10 hover:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-current"
               onClick={() => setBanner(null)}
             >
-              <X size={16} strokeWidth={1.5} />
+              <X className="h-4 w-4" aria-hidden />
             </button>
           </div>
         )}
 
-        <header>
-          <h1 className="font-serif-display text-3xl tracking-tight">Meet admin</h1>
-          <p className="mt-2 text-sm text-ink-mute">
-            Quorum {overview.quorum} of {overview.members.length}, Mon to Fri{" "}
-            {overview.window.start} to {overview.window.end}{" "}
-            {overview.hostTimezone.replaceAll("_", " ")}
-          </p>
-        </header>
+        <div className="mb-8 grid gap-3 md:grid-cols-3">
+          <OverviewFact
+            icon={<Clock3 className="h-4 w-4" />}
+            label="Booking hours"
+            value={`${overview.window.start}–${overview.window.end}`}
+            detail={overview.hostTimezone.replaceAll("_", " ")}
+          />
+          <OverviewFact
+            icon={<Users className="h-4 w-4" />}
+            label="Team meeting quorum"
+            value={`${overview.quorum} of ${overview.members.length}`}
+            detail="Monday to Friday"
+          />
+          <OverviewFact
+            icon={<ShieldCheck className="h-4 w-4" />}
+            label="Availability health"
+            value={`${healthyMembers} ready`}
+            detail={`${overview.accounts.length} connected account${overview.accounts.length === 1 ? "" : "s"}`}
+            tone={healthyMembers === overview.members.length ? "ok" : "warn"}
+          />
+        </div>
 
-        <CalendarConfigSection
-          overview={overview}
-          open={configOpen}
-          onToggle={() => setConfigOpen((prev) => !prev)}
-          onAccountUpdate={handleAccountUpdate}
-          onAccountDelete={handleAccountDelete}
-        />
-
-        <PersonalPagesSection />
-
-        <MeetingsSection />
+        {/* Keep every workspace mounted so drafts survive switching tabs. */}
+        <div hidden={activeView !== "schedule"}>
+          <ScheduleView onUnauthorized={handleUnauthorized} />
+        </div>
+        <div hidden={activeView !== "pages"}>
+          <BookingPagesView onUnauthorized={handleUnauthorized} />
+        </div>
+        <div hidden={activeView !== "calendars"}>
+          <CalendarConnectionsView
+            overview={overview}
+            onUnauthorized={handleUnauthorized}
+            onAccountUpdate={(id, patch) => {
+              setOverview((previous) =>
+                previous
+                  ? {
+                      ...previous,
+                      accounts: previous.accounts.map((account) =>
+                        account.id === id ? { ...account, ...patch } : account,
+                      ),
+                    }
+                  : previous,
+              );
+            }}
+            onAccountDelete={(id) => {
+              setOverview((previous) =>
+                previous
+                  ? {
+                      ...previous,
+                      accounts: previous.accounts.filter(
+                        (account) => account.id !== id,
+                      ),
+                    }
+                  : previous,
+              );
+            }}
+          />
+        </div>
       </div>
     </main>
   );
 }
 
-/* ------------------------------------------------------------------ */
-/* Personal booking pages                                              */
-/* ------------------------------------------------------------------ */
-
-interface PersonalPage {
-  memberKey: string;
-  memberName: string;
-  url: string;
-  enabled: boolean;
-  headline: string | null;
-  blurb: string | null;
-  effective: {
-    durationMinutes: number;
-    slotStepMinutes: number;
-    windowStart: string;
-    windowEnd: string;
-    minNoticeMinutes: number;
-    horizonDays: number;
-    bookableWeekdays: number[];
-    eventTitle: string;
-    eventDescription: string;
-  };
-  overrides: {
-    durationMinutes: number | null;
-    slotStepMinutes: number | null;
-    windowStartMin: number | null;
-    windowEndMin: number | null;
-    minNoticeMinutes: number | null;
-    horizonDays: number | null;
-    bookableWeekdays: number[] | null;
-    eventTitle: string | null;
-    eventDescription: string | null;
-  };
-  slackWebhookConfigured: boolean;
-  calendarReady: boolean;
-}
-
-interface PersonalPagesResponse {
-  hostTimezone: string;
-  defaults: {
-    durationMinutes: number;
-    slotStepMinutes: number;
-    windowStart: string;
-    windowEnd: string;
-    minNoticeMinutes: number;
-    horizonDays: number;
-    eventTitle: string;
-  };
-  pages: PersonalPage[];
-}
-
-const FIELD_INPUT =
-  "mt-1.5 w-full rounded-md border border-hairline bg-paper px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-hairline-strong";
-const FIELD_LABEL = "text-xs font-medium text-ink-mute";
-
-/**
- * One booking page per person (/meet/ju, ...), folded away like the calendar
- * wiring because it is set-up-once configuration rather than daily traffic.
- * Placed after the calendar section on purpose: connect a calendar, then turn
- * the page on.
- */
-function PersonalPagesSection() {
-  const [open, setOpen] = useState(false);
-  const [phase, setPhase] = useState<"loading" | "ready" | "failed">("loading");
-  const [data, setData] = useState<PersonalPagesResponse | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/meet/admin/pages", { cache: "no-store" })
-      .then((res) => (res.ok ? (res.json() as Promise<PersonalPagesResponse>) : null))
-      .then((json) => {
-        if (cancelled) return;
-        if (json) {
-          setData(json);
-          setPhase("ready");
-        } else {
-          setPhase("failed");
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setPhase("failed");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Patch in place rather than refetching, matching how account edits settle.
-  const applyPatch = (memberKey: string, patch: Partial<PersonalPage>) => {
-    setData((prev) =>
-      prev
-        ? {
-            ...prev,
-            pages: prev.pages.map((p) => (p.memberKey === memberKey ? { ...p, ...patch } : p)),
-          }
-        : prev
-    );
-  };
-
-  const live = data?.pages.filter((p) => p.enabled) ?? [];
-  const blind = live.filter((p) => !p.calendarReady);
-
-  return (
-    <section className="mt-8 rounded-lg border border-hairline bg-paper-raise">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen((prev) => !prev)}
-        className="flex w-full items-center gap-2 px-5 py-4 text-left"
-      >
-        <ChevronDown
-          size={16}
-          strokeWidth={1.5}
-          className={`shrink-0 text-ink-faint transition-transform ${open ? "" : "-rotate-90"}`}
-        />
-        <span className="text-base font-medium">Personal pages</span>
-        <span className="ml-auto truncate pl-3 text-sm text-ink-mute">
-          {phase === "ready" && data
-            ? `${live.length} of ${data.pages.length} live`
-            : phase === "failed"
-              ? "unavailable"
-              : "loading"}
-          {blind.length > 0 && (
-            <span className="text-status-warn">
-              {" "}
-              · no calendar for {blind.map((p) => p.memberName).join(", ")}
-            </span>
-          )}
-        </span>
-      </button>
-      {open && (
-        <div className="space-y-5 rounded-b-lg border-t border-hairline bg-paper p-5">
-          {phase === "failed" && (
-            <p className="text-sm text-status-warn">Could not load the personal pages.</p>
-          )}
-          {phase === "loading" && <p className="text-sm text-ink-mute">Loading…</p>}
-          {phase === "ready" &&
-            data?.pages.map((page) => (
-              <PersonalPageCard
-                key={page.memberKey}
-                page={page}
-                defaults={data.defaults}
-                hostTimezone={data.hostTimezone}
-                onPatched={applyPatch}
-              />
-            ))}
-        </div>
-      )}
-    </section>
-  );
-}
-
-function PersonalPageCard({
-  page,
-  defaults,
-  hostTimezone,
-  onPatched,
+function OverviewFact({
+  icon,
+  label,
+  value,
+  detail,
+  tone = "default",
 }: {
-  page: PersonalPage;
-  defaults: PersonalPagesResponse["defaults"];
-  hostTimezone: string;
-  onPatched: (memberKey: string, patch: Partial<PersonalPage>) => void;
+  icon: ReactNode;
+  label: string;
+  value: string;
+  detail: string;
+  tone?: "default" | "ok" | "warn";
 }) {
-  const [headline, setHeadline] = useState(page.headline ?? "");
-  const [blurb, setBlurb] = useState(page.blurb ?? "");
-  const [duration, setDuration] = useState(
-    page.overrides.durationMinutes === null ? "" : String(page.overrides.durationMinutes)
-  );
-  const [windowStart, setWindowStart] = useState(
-    page.overrides.windowStartMin === null ? "" : page.effective.windowStart
-  );
-  const [windowEnd, setWindowEnd] = useState(
-    page.overrides.windowEndMin === null ? "" : page.effective.windowEnd
-  );
-  const [minNotice, setMinNotice] = useState(
-    page.overrides.minNoticeMinutes === null ? "" : String(page.overrides.minNoticeMinutes)
-  );
-  const [eventTitle, setEventTitle] = useState(page.overrides.eventTitle ?? "");
-  const [slotStep, setSlotStep] = useState(
-    page.overrides.slotStepMinutes === null ? "" : String(page.overrides.slotStepMinutes)
-  );
-  const [horizon, setHorizon] = useState(
-    page.overrides.horizonDays === null ? "" : String(page.overrides.horizonDays)
-  );
-  const [slackWebhook, setSlackWebhook] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [note, setNote] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  /** "" means "inherit"; the field is sent as null to clear the override. */
-  const numberOrNull = (value: string): number | null | undefined => {
-    const trimmed = value.trim();
-    if (trimmed === "") return null;
-    const n = Number(trimmed);
-    return Number.isInteger(n) ? n : undefined;
-  };
-
-  const save = async (extra: Record<string, unknown> = {}) => {
-    setSaving(true);
-    setError(null);
-    setNote(null);
-    const duration_ = numberOrNull(duration);
-    const minNotice_ = numberOrNull(minNotice);
-    const slotStep_ = numberOrNull(slotStep);
-    const horizon_ = numberOrNull(horizon);
-    if (
-      duration_ === undefined ||
-      minNotice_ === undefined ||
-      slotStep_ === undefined ||
-      horizon_ === undefined
-    ) {
-      setSaving(false);
-      setError("Length, gap, notice and horizon must be whole numbers.");
-      return;
-    }
-    const body: Record<string, unknown> = {
-      headline: headline.trim() || null,
-      blurb: blurb.trim() || null,
-      durationMinutes: duration_,
-      windowStart: windowStart.trim() || null,
-      windowEnd: windowEnd.trim() || null,
-      minNoticeMinutes: minNotice_,
-      slotStepMinutes: slotStep_,
-      horizonDays: horizon_,
-      eventTitle: eventTitle.trim() || null,
-      ...extra,
-    };
-    // Only send the webhook when the admin actually typed one: an empty box
-    // must not silently clear a stored webhook on an unrelated save.
-    if (slackWebhook.trim()) body.slackWebhookUrl = slackWebhook.trim();
-
-    try {
-      const res = await fetch(`/api/meet/admin/pages/${encodeURIComponent(page.memberKey)}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const json = (await res.json().catch(() => null)) as { message?: string } | null;
-      if (!res.ok) {
-        setError(json?.message ?? "Could not save.");
-        return;
-      }
-      const patch: Partial<PersonalPage> = {
-        headline: headline.trim() || null,
-        blurb: blurb.trim() || null,
-      };
-      if (typeof extra.enabled === "boolean") patch.enabled = extra.enabled;
-      if (slackWebhook.trim()) patch.slackWebhookConfigured = true;
-      if (extra.slackWebhookUrl === null) patch.slackWebhookConfigured = false;
-      onPatched(page.memberKey, patch);
-      setSlackWebhook("");
-      setNote("Saved");
-      window.setTimeout(() => setNote(null), 2000);
-    } catch {
-      setError("Could not save.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
+  const iconTone =
+    tone === "ok"
+      ? "text-status-ok"
+      : tone === "warn"
+        ? "text-status-warn"
+        : "text-accent";
   return (
-    <div className="rounded-lg border border-hairline bg-paper-raise p-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <span className="text-base font-medium">{page.memberName}</span>
-        <a
-          href={`/${page.memberKey}`}
-          target="_blank"
-          rel="noreferrer"
-          className={ROW_LINK}
-        >
-          /{page.memberKey}
-        </a>
-        {!page.calendarReady && (
-          <span className={`${CHIP} text-status-warn`}>no calendar connected</span>
-        )}
-        <label className="ml-auto flex items-center gap-2 text-sm text-ink-soft">
-          <input
-            type="checkbox"
-            className="accent-accent"
-            checked={page.enabled}
-            disabled={saving}
-            onChange={(e) => void save({ enabled: e.target.checked })}
-          />
-          Live
-        </label>
-      </div>
-
-      <div className="mt-4 grid gap-3 sm:grid-cols-2">
-        <div className="sm:col-span-2">
-          <label className={FIELD_LABEL} htmlFor={`headline-${page.memberKey}`}>
-            Heading
-          </label>
-          <input
-            id={`headline-${page.memberKey}`}
-            className={FIELD_INPUT}
-            value={headline}
-            placeholder={page.memberName}
-            onChange={(e) => setHeadline(e.target.value)}
-          />
-        </div>
-        <div className="sm:col-span-2">
-          <label className={FIELD_LABEL} htmlFor={`blurb-${page.memberKey}`}>
-            Subheading
-          </label>
-          <input
-            id={`blurb-${page.memberKey}`}
-            className={FIELD_INPUT}
-            value={blurb}
-            placeholder="Optional line under the heading"
-            onChange={(e) => setBlurb(e.target.value)}
-          />
-        </div>
-        <div>
-          <label className={FIELD_LABEL} htmlFor={`duration-${page.memberKey}`}>
-            Length (minutes)
-          </label>
-          <input
-            id={`duration-${page.memberKey}`}
-            className={FIELD_INPUT}
-            inputMode="numeric"
-            value={duration}
-            placeholder={String(defaults.durationMinutes)}
-            onChange={(e) => setDuration(e.target.value)}
-          />
-        </div>
-        <div>
-          <label className={FIELD_LABEL} htmlFor={`step-${page.memberKey}`}>
-            Gap between slots (minutes)
-          </label>
-          <input
-            id={`step-${page.memberKey}`}
-            className={FIELD_INPUT}
-            inputMode="numeric"
-            value={slotStep}
-            placeholder={String(defaults.slotStepMinutes)}
-            onChange={(e) => setSlotStep(e.target.value)}
-          />
-        </div>
-        <div>
-          <label className={FIELD_LABEL} htmlFor={`horizon-${page.memberKey}`}>
-            Booking horizon (days)
-          </label>
-          <input
-            id={`horizon-${page.memberKey}`}
-            className={FIELD_INPUT}
-            inputMode="numeric"
-            value={horizon}
-            placeholder={String(defaults.horizonDays)}
-            onChange={(e) => setHorizon(e.target.value)}
-          />
-        </div>
-        <div>
-          <label className={FIELD_LABEL} htmlFor={`notice-${page.memberKey}`}>
-            Minimum notice (minutes)
-          </label>
-          <input
-            id={`notice-${page.memberKey}`}
-            className={FIELD_INPUT}
-            inputMode="numeric"
-            value={minNotice}
-            placeholder={String(defaults.minNoticeMinutes)}
-            onChange={(e) => setMinNotice(e.target.value)}
-          />
-        </div>
-        <div>
-          <label className={FIELD_LABEL} htmlFor={`start-${page.memberKey}`}>
-            Opens ({hostTimezone.replaceAll("_", " ")})
-          </label>
-          <input
-            id={`start-${page.memberKey}`}
-            className={FIELD_INPUT}
-            value={windowStart}
-            placeholder={defaults.windowStart}
-            onChange={(e) => setWindowStart(e.target.value)}
-          />
-        </div>
-        <div>
-          <label className={FIELD_LABEL} htmlFor={`end-${page.memberKey}`}>
-            Closes
-          </label>
-          <input
-            id={`end-${page.memberKey}`}
-            className={FIELD_INPUT}
-            value={windowEnd}
-            placeholder={defaults.windowEnd}
-            onChange={(e) => setWindowEnd(e.target.value)}
-          />
-        </div>
-        <div className="sm:col-span-2">
-          <label className={FIELD_LABEL} htmlFor={`title-${page.memberKey}`}>
-            Calendar event title
-          </label>
-          <input
-            id={`title-${page.memberKey}`}
-            className={FIELD_INPUT}
-            value={eventTitle}
-            placeholder={defaults.eventTitle}
-            onChange={(e) => setEventTitle(e.target.value)}
-          />
-          <p className="mt-1 text-xs text-ink-faint">
-            {"{name}"} is replaced with the booker&apos;s name.
-          </p>
-        </div>
-        <div className="sm:col-span-2">
-          <label className={FIELD_LABEL} htmlFor={`slack-${page.memberKey}`}>
-            Slack webhook
-          </label>
-          <input
-            id={`slack-${page.memberKey}`}
-            className={FIELD_INPUT}
-            type="password"
-            autoComplete="off"
-            value={slackWebhook}
-            placeholder={
-              page.slackWebhookConfigured
-                ? "configured — type a new URL to replace it"
-                : "https://hooks.slack.com/services/…"
-            }
-            onChange={(e) => setSlackWebhook(e.target.value)}
-          />
-          <p className="mt-1 text-xs text-ink-faint">
-            Where this page&apos;s bookings are posted. Empty uses the team channel.
-            {page.slackWebhookConfigured && (
-              <>
-                {" "}
-                <button
-                  type="button"
-                  className="underline decoration-hairline-strong underline-offset-2"
-                  disabled={saving}
-                  onClick={() => void save({ slackWebhookUrl: null })}
-                >
-                  Clear
-                </button>
-              </>
-            )}
-          </p>
-        </div>
-      </div>
-
-      <div className="mt-4 flex items-center gap-3">
-        <button
-          type="button"
-          className={PRIMARY_BUTTON}
-          disabled={saving}
-          onClick={() => void save()}
-        >
-          {saving ? "Saving…" : "Save"}
-        </button>
-        {note && <span className="text-sm text-status-ok">{note}</span>}
-        {error && <span className="text-sm text-status-warn">{error}</span>}
+    <div className="flex items-center gap-3 rounded-2xl border border-hairline bg-paper-raise px-4 py-3.5 shadow-[0_1px_0_hsl(var(--ink)_/_0.025)]">
+      <span
+        className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-paper ${iconTone}`}
+      >
+        {icon}
+      </span>
+      <div className="min-w-0">
+        <p className="text-[11px] font-medium text-ink-mute">{label}</p>
+        <p className="mt-0.5 text-sm font-semibold leading-5 text-ink">
+          {value} <span className="font-normal text-ink-mute">· {detail}</span>
+        </p>
       </div>
     </div>
   );
 }
 
-/**
- * The calendar wiring, folded away by default. The header doubles as the
- * status line so a folded section can still say "one account needs
- * reconnecting" or "Ava has no calendar connected", which would otherwise
- * be invisible until someone thought to expand it.
- */
-function CalendarConfigSection({
-  overview,
-  open,
-  onToggle,
-  onAccountUpdate,
-  onAccountDelete,
-}: {
-  overview: AdminOverview;
-  open: boolean;
-  onToggle: () => void;
-  onAccountUpdate: (id: string, patch: Partial<AdminAccount>) => void;
-  onAccountDelete: (id: string) => void;
-}) {
-  const accountCount = overview.accounts.length;
-  const reauthCount = overview.accounts.filter((a) => a.status === "reauth_required").length;
-  const unconnected = overview.members.filter(
-    (m) => !overview.accounts.some((a) => a.memberKey === m.key)
-  );
-
-  const warnings: string[] = [];
-  if (reauthCount > 0) {
-    warnings.push(`${reauthCount} need${reauthCount === 1 ? "s" : ""} reconnecting`);
-  }
-  if (unconnected.length > 0) {
-    warnings.push(`no calendar for ${unconnected.map((m) => m.name).join(", ")}`);
-  }
-
+function AdminLoading() {
   return (
-    <section className="mt-8 rounded-lg border border-hairline bg-paper-raise">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={onToggle}
-        className="flex w-full items-center gap-2 px-5 py-4 text-left"
-      >
-        <ChevronDown
-          size={16}
-          strokeWidth={1.5}
-          className={`shrink-0 text-ink-faint transition-transform ${open ? "" : "-rotate-90"}`}
-        />
-        <span className="text-base font-medium">Calendar config</span>
-        <span className="ml-auto truncate pl-3 text-sm text-ink-mute">
-          {accountCount} account{accountCount === 1 ? "" : "s"}, {overview.members.length} members
-          {warnings.length > 0 && (
-            <span className="text-status-warn"> · {warnings.join(", ")}</span>
-          )}
-        </span>
-      </button>
-      {open && (
-        // Recessed body so the member cards keep the raised look they have
-        // when they sit directly on the page.
-        <div className="space-y-5 rounded-b-lg border-t border-hairline bg-paper p-5">
-          {overview.members.map((member) => (
-            <MemberCard
-              key={member.key}
-              member={member}
-              accounts={overview.accounts.filter((a) => a.memberKey === member.key)}
-              mockMode={overview.mockMode}
-              onAccountUpdate={onAccountUpdate}
-              onAccountDelete={onAccountDelete}
+    <main
+      className="min-h-screen bg-paper text-ink"
+      aria-busy="true"
+      aria-label="Loading meeting admin"
+    >
+      <div className="border-b border-hairline">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
+          <div className="flex items-center gap-3">
+            <div className="h-9 w-9 motion-safe:animate-pulse rounded-xl bg-hairline" />
+            <div className="h-4 w-28 motion-safe:animate-pulse rounded bg-hairline" />
+          </div>
+          <LoaderCircle
+            className="h-5 w-5 motion-safe:animate-spin text-ink-faint"
+            aria-hidden
+          />
+        </div>
+      </div>
+      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+        <div className="grid gap-3 sm:grid-cols-3">
+          {[0, 1, 2].map((key) => (
+            <div
+              key={key}
+              className="h-20 motion-safe:animate-pulse rounded-2xl bg-hairline"
             />
           ))}
         </div>
-      )}
-    </section>
+        <div className="mt-8 h-10 w-64 motion-safe:animate-pulse rounded-lg bg-hairline" />
+        <div className="mt-4 h-72 motion-safe:animate-pulse rounded-3xl bg-hairline" />
+      </div>
+    </main>
   );
 }
 
-/**
- * What the config actually produced: upcoming calls first, past ones behind
- * a toggle. Cancelled bookings stay in the list so a hole in the calendar
- * has an explanation.
- */
-function MeetingsSection() {
-  const [phase, setPhase] = useState<"loading" | "ready" | "failed">("loading");
-  const [data, setData] = useState<BookingsResponse | null>(null);
-  const [showPast, setShowPast] = useState(false);
-  const [nowMs, setNowMs] = useState(0);
-
-  const load = useCallback(async () => {
-    setPhase("loading");
-    try {
-      const res = await fetch("/api/meet/admin/bookings", { cache: "no-store" });
-      if (!res.ok) throw new Error(`status ${res.status}`);
-      setData((await res.json()) as BookingsResponse);
-      setNowMs(Date.now());
-      setPhase("ready");
-    } catch {
-      setPhase("failed");
-    }
-  }, []);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => void load(), 0);
-    return () => window.clearTimeout(timer);
-  }, [load]);
-
-  // A call that has started but not ended still belongs to "upcoming": it is
-  // happening now, which is exactly when someone opens this page.
-  const bookings = data?.bookings ?? [];
-  const upcoming = bookings.filter((b) => Date.parse(b.endAt) >= nowMs);
-  const past = bookings.filter((b) => Date.parse(b.endAt) < nowMs).reverse();
-
+function AdminLoadError({ onRetry }: { onRetry: () => void }) {
   return (
-    <section className="mt-6">
-      <div className="flex items-baseline justify-between gap-3">
-        <h2 className="text-base font-medium">Scheduled meetings</h2>
+    <main className="grid min-h-screen place-items-center bg-paper px-5 text-ink">
+      <div className="w-full max-w-md rounded-3xl border border-hairline bg-paper-raise p-8 text-center shadow-[0_20px_60px_hsl(var(--ink)_/_0.08)]">
+        <span className="mx-auto grid h-12 w-12 place-items-center rounded-2xl bg-status-warn/10 text-status-warn">
+          <AlertTriangle className="h-5 w-5" aria-hidden />
+        </span>
+        <h1 className="mt-5 font-serif-display text-2xl tracking-tight">
+          The workspace didn’t load
+        </h1>
+        <p className="mt-2 text-sm leading-6 text-ink-mute">
+          Your meeting data is safe. Check the connection and try loading the
+          admin workspace again.
+        </p>
         <button
           type="button"
-          onClick={() => void load()}
-          className="text-sm text-ink-mute transition-colors hover:text-ink-soft"
+          onClick={onRetry}
+          className="mt-6 inline-flex min-h-11 items-center justify-center rounded-xl bg-ink px-5 text-sm font-medium text-paper transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
-          {phase === "loading" ? "Loading..." : "Refresh"}
+          Try again
         </button>
       </div>
-
-      {phase === "failed" && (
-        <p className="mt-3 text-sm text-ink-mute">Could not load the bookings.</p>
-      )}
-
-      {data && (
-        <>
-          <div className="mt-3 rounded-lg border border-hairline bg-paper-raise px-5">
-            {upcoming.length === 0 ? (
-              <p className="py-4 text-sm text-ink-mute">
-                {past.length === 0 ? "No meetings booked yet." : "Nothing upcoming."}
-              </p>
-            ) : (
-              <ul className="divide-y divide-hairline">
-                {upcoming.map((booking) => (
-                  <BookingRow
-                    key={booking.id}
-                    booking={booking}
-                    hostTimezone={data.hostTimezone}
-                    members={data.members}
-                  />
-                ))}
-              </ul>
-            )}
-          </div>
-
-          {past.length > 0 && (
-            <div className="mt-3">
-              <button
-                type="button"
-                aria-expanded={showPast}
-                onClick={() => setShowPast((prev) => !prev)}
-                className="flex items-center gap-2 text-sm text-ink-mute transition-colors hover:text-ink-soft"
-              >
-                <ChevronDown
-                  size={14}
-                  strokeWidth={1.5}
-                  className={`transition-transform ${showPast ? "" : "-rotate-90"}`}
-                />
-                Past 30 days ({past.length})
-              </button>
-              {showPast && (
-                <div className="mt-2 rounded-lg border border-hairline bg-paper-raise px-5">
-                  <ul className="divide-y divide-hairline">
-                    {past.map((booking) => (
-                      <BookingRow
-                        key={booking.id}
-                        booking={booking}
-                        hostTimezone={data.hostTimezone}
-                        members={data.members}
-                      />
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          )}
-        </>
-      )}
-    </section>
+    </main>
   );
 }
 
-/**
- * Booker-supplied zones come straight from the request, so a junk zone must
- * degrade to UTC rather than blank the admin console.
- */
-function formatWhen(iso: string, timeZone: string): string {
-  const options: Intl.DateTimeFormatOptions = {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZone,
-  };
-  const date = new Date(iso);
-  try {
-    return new Intl.DateTimeFormat("en-US", options).format(date);
-  } catch {
-    return new Intl.DateTimeFormat("en-US", { ...options, timeZone: "UTC" }).format(date);
-  }
-}
-
-const CHIP = "shrink-0 rounded-full border border-hairline px-2 py-0.5 text-xs";
-const ROW_LINK = "text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink";
-
-function BookingRow({
-  booking,
-  hostTimezone,
-  members,
+function LoginCard({
+  onAuthed,
+  banner,
 }: {
-  booking: AdminBooking;
-  hostTimezone: string;
-  members: Member[];
+  onAuthed: () => void;
+  banner: { tone: "ok" | "warn"; text: string } | null;
 }) {
-  const cancelled = booking.status === "cancelled";
-  const attending = booking.attendeeMemberKeys
-    .map((key) => members.find((m) => m.key === key)?.name ?? key)
-    .join(", ");
-
-  return (
-    <li className="py-3.5">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-        <span
-          className={`text-sm ${cancelled ? "text-ink-mute line-through" : "text-ink"}`}
-        >
-          {formatWhen(booking.startAt, hostTimezone)}
-        </span>
-        <span className="text-xs text-ink-faint">{booking.durationMinutes} min</span>
-        {cancelled && <span className={`${CHIP} text-status-warn`}>cancelled</span>}
-        {!cancelled && booking.syncStatus !== "synced" && (
-          <span className={`${CHIP} text-status-warn`}>sync {booking.syncStatus}</span>
-        )}
-        {booking.rescheduleCount > 0 && (
-          <span className={`${CHIP} text-ink-mute`}>
-            moved {booking.rescheduleCount}
-            {booking.rescheduleCount === 1 ? " time" : " times"}
-          </span>
-        )}
-      </div>
-      <p className="mt-1 break-words text-sm text-ink-soft">
-        {booking.name} <span className="text-ink-mute">{booking.email}</span>
-        {booking.guests.length > 0 && (
-          <span className="text-ink-mute">
-            {" "}
-            + {booking.guests.length} guest{booking.guests.length === 1 ? "" : "s"}:{" "}
-            {booking.guests.join(", ")}
-          </span>
-        )}
-      </p>
-      <p className="mt-0.5 text-xs text-ink-mute">
-        {attending ? `With ${attending}` : "No attendees recorded"}
-        {/* The booker's own time only earns a line when it differs from ours. */}
-        {booking.timezone !== hostTimezone && (
-          <>
-            {" "}
-            &middot; {formatWhen(booking.startAt, booking.timezone)} for the booker (
-            {booking.timezone.replaceAll("_", " ")})
-          </>
-        )}
-      </p>
-      {booking.notes && (
-        <p className="mt-1.5 whitespace-pre-wrap text-xs text-ink-mute">{booking.notes}</p>
-      )}
-      <p className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-xs">
-        {/* A cancelled booking has no live call and cannot be moved; linking
-            to either would be a dead end. Its manage page still offers a
-            rebooking link, so it stays reachable under an honest label. */}
-        {!cancelled && booking.meetingUrl && (
-          <a href={booking.meetingUrl} target="_blank" rel="noreferrer" className={ROW_LINK}>
-            Video link
-          </a>
-        )}
-        <a href={booking.manageUrl} target="_blank" rel="noreferrer" className={ROW_LINK}>
-          {cancelled ? "Manage page" : "Reschedule or cancel"}
-        </a>
-      </p>
-    </li>
-  );
-}
-
-function LoginCard({ onAuthed }: { onAuthed: () => void }) {
   const [secret, setSecret] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -991,14 +503,16 @@ function LoginCard({ onAuthed }: { onAuthed: () => void }) {
     setPending(true);
     setError(null);
     try {
-      const res = await fetch("/api/meet/admin/login", {
+      const response = await fetch("/api/meet/admin/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ secret }),
       });
-      if (!res.ok) {
+      if (!response.ok) {
         setError(
-          res.status === 401 ? "That secret does not match." : "Sign-in failed. Try again."
+          response.status === 401
+            ? "That admin secret does not match."
+            : "Sign-in failed. Try again.",
         );
         return;
       }
@@ -1011,318 +525,105 @@ function LoginCard({ onAuthed }: { onAuthed: () => void }) {
   };
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-paper px-5 text-ink">
-      <form
-        className="w-full max-w-sm rounded-lg border border-hairline bg-paper-raise p-6"
-        onSubmit={(event) => void submit(event)}
-      >
-        <h1 className="font-serif-display text-xl">Meet admin</h1>
-        <label className="mt-4 block text-sm text-ink-soft" htmlFor="meet-admin-secret">
-          Admin secret
-        </label>
-        <input
-          id="meet-admin-secret"
-          type="password"
-          autoComplete="current-password"
-          value={secret}
-          onChange={(event) => setSecret(event.target.value)}
-          className="mt-1.5 w-full rounded-md border border-hairline bg-paper px-3 py-2 text-sm text-ink outline-none transition-colors focus:border-hairline-strong"
-        />
-        <button type="submit" disabled={pending || !secret} className={`${PRIMARY_BUTTON} mt-4 w-full`}>
-          {pending ? "Signing in..." : "Sign in"}
-        </button>
-        {error && <p className="mt-3 text-sm text-status-down">{error}</p>}
-      </form>
-    </main>
-  );
-}
-
-function MemberCard({
-  member,
-  accounts,
-  mockMode,
-  onAccountUpdate,
-  onAccountDelete,
-}: {
-  member: Member;
-  accounts: AdminAccount[];
-  mockMode: boolean;
-  onAccountUpdate: (id: string, patch: Partial<AdminAccount>) => void;
-  onAccountDelete: (id: string) => void;
-}) {
-  return (
-    <section className="rounded-lg border border-hairline bg-paper-raise p-5">
-      <h2 className="text-base font-medium">{member.name}</h2>
-      {accounts.length === 0 ? (
-        <p className="mt-3 text-sm text-ink-mute">No calendars connected yet.</p>
-      ) : (
-        <ul className="mt-2 divide-y divide-hairline">
-          {accounts.map((account) => (
-            <AccountRow
-              key={account.id}
-              account={account}
-              onUpdate={onAccountUpdate}
-              onDelete={onAccountDelete}
-            />
-          ))}
-        </ul>
-      )}
-      <div className="mt-4 flex flex-wrap gap-2 border-t border-hairline pt-4">
-        {mockMode ? (
-          <>
-            <button type="button" disabled className={`${SUBTLE_BUTTON} cursor-default opacity-50`}>
-              Connect Google
-            </button>
-            <button type="button" disabled className={`${SUBTLE_BUTTON} cursor-default opacity-50`}>
-              Connect Outlook
-            </button>
-            <p className="w-full text-xs text-ink-mute">
-              Connect flows are disabled in mock mode
-            </p>
-          </>
-        ) : (
-          <>
-            <a
-              href={`/api/meet/oauth/google/start?member=${encodeURIComponent(member.key)}`}
-              className={SUBTLE_BUTTON}
-            >
-              Connect Google
-            </a>
-            <a
-              href={`/api/meet/oauth/microsoft/start?member=${encodeURIComponent(member.key)}`}
-              className={SUBTLE_BUTTON}
-            >
-              Connect Outlook
-            </a>
-          </>
-        )}
-      </div>
-    </section>
-  );
-}
-
-function AccountRow({
-  account,
-  onUpdate,
-  onDelete,
-}: {
-  account: AdminAccount;
-  onUpdate: (id: string, patch: Partial<AdminAccount>) => void;
-  onDelete: (id: string) => void;
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const [calendars, setCalendars] = useState<CalendarEntry[] | null>(null);
-  const [calsLoading, setCalsLoading] = useState(false);
-  const [calsError, setCalsError] = useState<string | null>(null);
-  const [checked, setChecked] = useState<ReadonlySet<string>>(
-    () => new Set(account.selectedCalendars.map((c) => c.id))
-  );
-  const [saving, setSaving] = useState(false);
-  const [saveNote, setSaveNote] = useState<string | null>(null);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-
-  const loadCalendars = async () => {
-    setCalsLoading(true);
-    setCalsError(null);
-    try {
-      const res = await fetch(`/api/meet/admin/accounts/${account.id}/calendars`, {
-        cache: "no-store",
-      });
-      if (res.status === 409) {
-        onUpdate(account.id, { status: "reauth_required" });
-        setCalsError("This account needs to be reconnected before its calendars can be listed.");
-        return;
-      }
-      if (!res.ok) throw new Error(`status ${res.status}`);
-      const data = (await res.json()) as { calendars: CalendarEntry[] };
-      setCalendars(data.calendars);
-    } catch {
-      setCalsError("Could not load calendars. Collapse and expand the row to retry.");
-    } finally {
-      setCalsLoading(false);
-    }
-  };
-
-  const toggleExpanded = () => {
-    const next = !expanded;
-    setExpanded(next);
-    if (next && calendars === null && !calsLoading) void loadCalendars();
-  };
-
-  const toggleCalendar = (id: string) => {
-    setSaveNote(null);
-    setSaveError(null);
-    setChecked((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  // Only calendars visible in the picker can be saved; stale ids from a
-  // previous selection fall away silently.
-  const selection = (calendars ?? [])
-    .filter((c) => checked.has(c.id))
-    .map((c): SelectedCalendar => ({ id: c.id, name: c.name }));
-  const tooMany = selection.length > MAX_SELECTED_CALENDARS;
-
-  const save = async () => {
-    if (!calendars || saving || tooMany) return;
-    setSaving(true);
-    setSaveError(null);
-    setSaveNote(null);
-    try {
-      const res = await fetch(`/api/meet/admin/accounts/${account.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ selectedCalendars: selection }),
-      });
-      if (!res.ok) throw new Error(`status ${res.status}`);
-      onUpdate(account.id, { selectedCalendars: selection });
-      setSaveNote("Saved.");
-    } catch {
-      setSaveError("Saving the selection failed. Try again.");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const remove = async () => {
-    setDeleting(true);
-    setDeleteError(null);
-    try {
-      const res = await fetch(`/api/meet/admin/accounts/${account.id}`, { method: "DELETE" });
-      const data: unknown = await res.json().catch(() => null);
-      if (!res.ok) {
-        const message =
-          data && typeof data === "object" && "message" in data &&
-          typeof (data as { message?: unknown }).message === "string"
-            ? (data as { message: string }).message
-            : "Disconnecting failed. Try again.";
-        throw new Error(message);
-      }
-      onDelete(account.id);
-    } catch (error) {
-      setDeleting(false);
-      setDeleteError(
-        error instanceof Error ? error.message : "Disconnecting failed. Try again."
-      );
-    }
-  };
-
-  return (
-    <li className="py-3">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <button
-          type="button"
-          aria-expanded={expanded}
-          onClick={toggleExpanded}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
-        >
-          <ChevronDown
-            size={16}
-            strokeWidth={1.5}
-            className={`shrink-0 text-ink-faint transition-transform ${expanded ? "" : "-rotate-90"}`}
-          />
-          <span className="font-mono text-xs uppercase tracking-wide text-ink-mute">
-            {account.provider === "google" ? "google" : "outlook"}
-          </span>
-          <span className="truncate text-sm text-ink">{account.email}</span>
-          {account.status === "reauth_required" && (
-            <span className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-xs text-status-warn">
-              reconnect needed
+    <main className="relative grid min-h-screen place-items-center overflow-hidden bg-paper px-5 py-16 text-ink">
+      <div
+        className="pointer-events-none absolute left-1/2 top-[-18rem] h-[34rem] w-[54rem] -translate-x-1/2 rounded-full bg-[radial-gradient(circle,hsl(var(--accent)_/_0.10),transparent_68%)]"
+        aria-hidden
+      />
+      <div className="relative w-full max-w-md">
+        <div className="mb-5 flex items-center justify-between px-1">
+          <div className="flex items-center gap-3">
+            <span className="grid h-10 w-10 place-items-center rounded-2xl bg-ink text-paper shadow-[0_10px_30px_hsl(var(--ink)_/_0.16)]">
+              <CalendarClock className="h-4 w-4" aria-hidden />
             </span>
-          )}
-        </button>
-        {confirming ? (
-          <span className="flex shrink-0 items-center gap-2 text-sm">
-            <span className="text-ink-mute">Remove this account?</span>
-            <button
-              type="button"
-              disabled={deleting}
-              onClick={() => void remove()}
-              className="text-status-down transition-opacity hover:opacity-80 disabled:opacity-50"
-            >
-              {deleting ? "Removing..." : "Confirm"}
-            </button>
-            <button
-              type="button"
-              onClick={() => setConfirming(false)}
-              className="text-ink-mute transition-colors hover:text-ink-soft"
-            >
-              Cancel
-            </button>
-          </span>
-        ) : (
-          <button
-            type="button"
-            onClick={() => {
-              setConfirming(true);
-              setDeleteError(null);
-            }}
-            className="shrink-0 text-sm text-ink-mute transition-colors hover:text-ink-soft"
-          >
-            Disconnect
-          </button>
-        )}
-      </div>
-      {deleteError && (
-        <p role="alert" className="mt-1 text-sm text-ink-mute">
-          {deleteError}
-        </p>
-      )}
-      {expanded && (
-        <div className="mt-3 rounded-md border border-hairline bg-paper p-3">
-          {calsLoading && <p className="text-sm text-ink-mute">Loading calendars...</p>}
-          {calsError && <p className="text-sm text-ink-mute">{calsError}</p>}
-          {calendars && (
-            <>
-              {calendars.length === 0 ? (
-                <p className="text-sm text-ink-mute">No calendars found on this account.</p>
-              ) : (
-                <ul className="space-y-1.5">
-                  {calendars.map((cal) => (
-                    <li key={cal.id}>
-                      <label className="flex items-center gap-2 text-sm text-ink-soft">
-                        <input
-                          type="checkbox"
-                          checked={checked.has(cal.id)}
-                          disabled={saving}
-                          onChange={() => toggleCalendar(cal.id)}
-                          className="accent-accent"
-                        />
-                        <span className="truncate">{cal.name}</span>
-                        {cal.primary && <span className="text-xs text-ink-faint">primary</span>}
-                      </label>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <div className="mt-3 flex flex-wrap items-center gap-3">
-                <button
-                  type="button"
-                  disabled={saving || tooMany}
-                  onClick={() => void save()}
-                  className={PRIMARY_BUTTON}
-                >
-                  {saving ? "Saving..." : "Save"}
-                </button>
-                {tooMany && (
-                  <span className="text-sm text-ink-mute">
-                    Pick at most {MAX_SELECTED_CALENDARS} calendars.
-                  </span>
-                )}
-                {saveNote && <span className="text-sm text-status-ok">{saveNote}</span>}
-                {saveError && <span className="text-sm text-ink-mute">{saveError}</span>}
-              </div>
-            </>
-          )}
+            <div>
+              <p className="font-serif-display text-xl tracking-tight">
+                Meet admin
+              </p>
+              <p className="text-[11px] text-ink-mute">
+                Private scheduling workspace
+              </p>
+            </div>
+          </div>
+          <ThemeToggle />
         </div>
-      )}
-    </li>
+
+        <form
+          className="rounded-3xl border border-hairline bg-paper-raise p-6 shadow-[0_24px_80px_hsl(var(--ink)_/_0.10)] sm:p-8"
+          onSubmit={(event) => void submit(event)}
+          aria-busy={pending}
+        >
+          <span className="grid h-11 w-11 place-items-center rounded-2xl border border-hairline bg-paper text-accent">
+            <KeyRound className="h-4 w-4" aria-hidden />
+          </span>
+          <h1 className="mt-5 font-serif-display text-3xl tracking-tight">
+            Welcome back
+          </h1>
+          <p className="mt-2 text-sm leading-6 text-ink-mute">
+            Enter the private admin secret to manage meetings, booking pages and
+            connected calendars.
+          </p>
+
+          {banner?.tone === "warn" && (
+            <p className="mt-4 rounded-xl border border-status-warn/30 bg-status-warn/5 px-3 py-2.5 text-xs leading-5 text-status-warn">
+              {banner.text}
+            </p>
+          )}
+
+          <label
+            className="mt-6 block text-xs font-semibold text-ink-soft"
+            htmlFor="meet-admin-secret"
+          >
+            Admin secret
+          </label>
+          <div className="relative mt-2">
+            <KeyRound
+              className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-faint"
+              aria-hidden
+            />
+            <input
+              id="meet-admin-secret"
+              type="password"
+              autoComplete="current-password"
+              autoFocus
+              value={secret}
+              onChange={(event) => setSecret(event.target.value)}
+              className="h-12 w-full rounded-xl border border-hairline bg-paper pl-10 pr-3 text-sm text-ink outline-none transition placeholder:text-ink-faint focus:border-accent/55 focus:ring-2 focus:ring-accent/15"
+              placeholder="Enter your secret"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={pending || !secret}
+            className="mt-4 inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-ink px-4 text-sm font-semibold text-paper shadow-[0_8px_24px_hsl(var(--ink)_/_0.14)] transition hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-not-allowed disabled:opacity-45"
+          >
+            {pending && (
+              <LoaderCircle
+                className="h-4 w-4 motion-safe:animate-spin"
+                aria-hidden
+              />
+            )}
+            {pending ? "Signing in…" : "Open workspace"}
+          </button>
+          {error && (
+            <p
+              role="alert"
+              className="mt-3 flex items-start gap-2 text-xs leading-5 text-status-down"
+            >
+              <AlertTriangle
+                className="mt-0.5 h-3.5 w-3.5 shrink-0"
+                aria-hidden
+              />
+              {error}
+            </p>
+          )}
+
+          <div className="mt-6 flex items-center gap-2 border-t border-hairline pt-5 text-[11px] leading-5 text-ink-faint">
+            <ShieldCheck className="h-3.5 w-3.5 shrink-0" aria-hidden />
+            The secret is exchanged for a secure, HTTP-only admin session.
+          </div>
+        </form>
+      </div>
+    </main>
   );
 }

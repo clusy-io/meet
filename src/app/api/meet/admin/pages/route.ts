@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/meet/admin";
 import { getMeetConfig } from "@/lib/meet/config";
 import { ensureMockReady } from "@/lib/meet/mock";
-import { listPages } from "@/lib/meet/pages";
+import { configForPage, listPages } from "@/lib/meet/pages";
 import { getMeetStore } from "@/lib/meet/store";
 import { minutesToClock } from "@/lib/meet/tz";
 
@@ -37,10 +37,13 @@ export async function GET(request: Request) {
       windowEnd: minutesToClock(config.windowEndMin),
       minNoticeMinutes: config.minNoticeMinutes,
       horizonDays: config.horizonDays,
+      bookableWeekdays: config.bookableWeekdays,
       eventTitle: config.eventTitle,
+      eventDescription: config.eventDescription,
     },
     pages: pages.map((page) => {
       const stored = page.settings;
+      const inherited = configForPage(config, page.member, null);
       return {
         memberKey: page.member.key,
         memberName: page.member.name,
@@ -48,6 +51,20 @@ export async function GET(request: Request) {
         enabled: page.enabled,
         headline: stored?.headline ?? null,
         blurb: stored?.blurb ?? null,
+        // Personal pages generate host-specific invite copy even without a
+        // stored row. Expose that baseline so inherited labels and the live
+        // preview describe the real booking page.
+        inherited: {
+          durationMinutes: inherited.durationMinutes,
+          slotStepMinutes: inherited.slotStepMinutes,
+          windowStart: minutesToClock(inherited.windowStartMin),
+          windowEnd: minutesToClock(inherited.windowEndMin),
+          minNoticeMinutes: inherited.minNoticeMinutes,
+          horizonDays: inherited.horizonDays,
+          bookableWeekdays: inherited.bookableWeekdays,
+          eventTitle: inherited.eventTitle,
+          eventDescription: inherited.eventDescription,
+        },
         // What the page actually runs on, defaults folded in.
         effective: {
           durationMinutes: page.config.durationMinutes,

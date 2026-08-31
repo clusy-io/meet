@@ -50,6 +50,8 @@ export async function GET(request: Request) {
       syncStatus: b.syncStatus,
       /** Non-zero means the booker moved the call at least once. */
       rescheduleCount: b.history.length,
+      /** Every previous time for an expanded operational audit trail. */
+      history: b.history,
       remindersSent: b.remindersSent,
       manageUrl: `${config.siteOrigin}/manage/${b.manageToken}`,
       createdAt: b.createdAt,
