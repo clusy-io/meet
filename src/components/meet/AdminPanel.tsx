@@ -216,8 +216,8 @@ export function AdminPanel() {
                 <span>
                   {healthyMembers}/{overview.members.length} calendars ready
                   <span className="mx-2 text-hairline-strong">/</span>
-                  {overview.window.start}–{overview.window.end}
-                  <span className="mx-2 text-hairline-strong">/</span>
+                  Booking hours {overview.window.start}–{overview.window.end}
+                  {" "}
                   {overview.hostTimezone.replaceAll("_", " ")}
                 </span>
               </div>

@@ -36,6 +36,7 @@ import {
   groupScheduleBookings,
   hostLabel,
   nextBooking,
+  resolveScheduleDisplayTimezone,
   scheduleCounts,
   type ScheduleDensity,
   type ScheduleFilters,
@@ -165,6 +166,7 @@ export function ScheduleView({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [fetchedAt, setFetchedAt] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [browserTimezone, setBrowserTimezone] = useState<string | null>(null);
   const [filters, setFilters] = useState<ScheduleFilters>(DEFAULT_FILTERS);
   const [density, setDensity] = useState<ScheduleDensity>("comfortable");
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(
@@ -178,6 +180,19 @@ export function ScheduleView({
   useEffect(() => {
     const timer = window.setInterval(() => setNowMs(Date.now()), 60_000);
     return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try {
+        setBrowserTimezone(
+          Intl.DateTimeFormat().resolvedOptions().timeZone || null,
+        );
+      } catch {
+        // The configured booking timezone remains a safe display fallback.
+      }
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, []);
 
   useEffect(() => {
@@ -263,20 +278,25 @@ export function ScheduleView({
 
   const view = useMemo(() => {
     if (!data) return null;
+    const displayTimezone = resolveScheduleDisplayTimezone(
+      browserTimezone,
+      data.hostTimezone,
+    );
     const filtered = filterScheduleBookings(
       data.bookings,
       data.members,
-      data.hostTimezone,
+      displayTimezone,
       filters,
       nowMs,
     );
     return {
+      displayTimezone,
       filtered,
-      groups: groupScheduleBookings(filtered, data.hostTimezone),
-      counts: scheduleCounts(data.bookings, data.hostTimezone, nowMs),
+      groups: groupScheduleBookings(filtered, displayTimezone),
+      counts: scheduleCounts(data.bookings, displayTimezone, nowMs),
       next: nextBooking(data.bookings, nowMs),
     };
-  }, [data, filters, nowMs]);
+  }, [browserTimezone, data, filters, nowMs]);
 
   if (phase === "loading") return <ScheduleSkeleton />;
   if (phase === "failed" || !data || !view) {
@@ -297,7 +317,16 @@ export function ScheduleView({
             Schedule
           </h2>
           <p className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm leading-6 text-ink-mute">
-            Your meeting ledger in {data.hostTimezone.replaceAll("_", " ")}.
+            <span>Times shown in your current timezone</span>
+            <span aria-hidden className="text-hairline-strong">
+              /
+            </span>
+            <span
+              data-testid="schedule-timezone"
+              className="font-medium text-ink-soft"
+            >
+              {view.displayTimezone.replaceAll("_", " ")}
+            </span>
             <span className="text-ink-faint">
               {freshnessLabel(fetchedAt, nowMs)}
             </span>
@@ -333,7 +362,7 @@ export function ScheduleView({
         <NextUpCard
           booking={view.next}
           members={data.members}
-          hostTimezone={data.hostTimezone}
+          displayTimezone={view.displayTimezone}
           nowMs={nowMs}
         />
         <div className="grid grid-cols-3 divide-x divide-hairline border-y border-hairline lg:grid-cols-1 lg:divide-x-0 lg:divide-y">
@@ -530,7 +559,7 @@ export function ScheduleView({
                       >
                         {formatDayHeading(
                           group.bookings[0].startAt,
-                          data.hostTimezone,
+                          view.displayTimezone,
                           nowMs,
                         )}
                       </h2>
@@ -546,7 +575,7 @@ export function ScheduleView({
                           key={booking.id}
                           booking={booking}
                           members={data.members}
-                          hostTimezone={data.hostTimezone}
+                          displayTimezone={view.displayTimezone}
                           nowMs={nowMs}
                           density={density}
                           expanded={expanded.has(booking.id)}
@@ -568,12 +597,12 @@ export function ScheduleView({
 function NextUpCard({
   booking,
   members,
-  hostTimezone,
+  displayTimezone,
   nowMs,
 }: {
   booking: AdminBooking | null;
   members: BookingsResponse["members"];
-  hostTimezone: string;
+  displayTimezone: string;
   nowMs: number;
 }) {
   if (!booking) {
@@ -617,14 +646,14 @@ function NextUpCard({
       <div className="mt-5 grid min-w-0 gap-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
         <div className="min-w-0">
           <p className="text-sm font-medium text-paper/60">
-            {formatShortDate(booking.startAt, hostTimezone)}
+            {formatShortDate(booking.startAt, displayTimezone)}
           </p>
           <p className="mt-1 flex min-w-0 flex-wrap items-baseline gap-x-2 font-serif-display text-[clamp(2rem,8vw,3rem)] font-bold leading-tight tracking-[-0.045em] text-paper sm:text-5xl">
-            <span>{formatTime(booking.startAt, hostTimezone)}</span>
+            <span>{formatTime(booking.startAt, displayTimezone)}</span>
             <span className="text-paper/35" aria-hidden>
               –
             </span>
-            <span>{formatTime(booking.endAt, hostTimezone)}</span>
+            <span>{formatTime(booking.endAt, displayTimezone)}</span>
           </p>
           <h2 className="mt-5 break-words text-lg font-semibold tracking-tight text-paper">
             {booking.name}
@@ -772,7 +801,7 @@ function FilterSelect({
 function MeetingRow({
   booking,
   members,
-  hostTimezone,
+  displayTimezone,
   nowMs,
   density,
   expanded,
@@ -780,7 +809,7 @@ function MeetingRow({
 }: {
   booking: AdminBooking;
   members: BookingsResponse["members"];
-  hostTimezone: string;
+  displayTimezone: string;
   nowMs: number;
   density: ScheduleDensity;
   expanded: boolean;
@@ -815,10 +844,10 @@ function MeetingRow({
                 cancelled ? "text-ink-mute line-through" : "text-ink"
               }`}
             >
-              {formatTime(booking.startAt, hostTimezone)}
+              {formatTime(booking.startAt, displayTimezone)}
             </time>
             <span className="mt-0.5 block text-xs tabular-nums text-ink-faint">
-              {formatTime(booking.endAt, hostTimezone)} ·{" "}
+              {formatTime(booking.endAt, displayTimezone)} ·{" "}
               {booking.durationMinutes}m
             </span>
           </div>
@@ -920,7 +949,7 @@ function MeetingRow({
             id={detailsId}
             booking={booking}
             members={members}
-            hostTimezone={hostTimezone}
+            displayTimezone={displayTimezone}
           />
         )}
       </article>
@@ -932,12 +961,12 @@ function MeetingDetails({
   id,
   booking,
   members,
-  hostTimezone,
+  displayTimezone,
 }: {
   id: string;
   booking: AdminBooking;
   members: BookingsResponse["members"];
-  hostTimezone: string;
+  displayTimezone: string;
 }) {
   return (
     <div
@@ -947,8 +976,11 @@ function MeetingDetails({
       className="mt-4 border-t border-hairline pt-4"
     >
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <DetailCell icon={<Clock3 size={14} />} label="Host time">
-          {formatFullDateTime(booking.startAt, hostTimezone)}
+        <DetailCell icon={<Clock3 size={14} />} label="Your time">
+          {formatFullDateTime(booking.startAt, displayTimezone)}
+          <span className="mt-1 block text-[11px] text-ink-faint">
+            {displayTimezone.replaceAll("_", " ")}
+          </span>
         </DetailCell>
         <DetailCell icon={<Globe2 size={14} />} label="Booker time">
           {formatFullDateTime(booking.startAt, booking.timezone)}
@@ -964,7 +996,7 @@ function MeetingDetails({
         <DetailCell icon={<UserRound size={14} />} label="Hosts">
           {hostLabel(booking, members)}
           <span className="mt-1 block text-[11px] text-ink-faint">
-            Created {formatFullDateTime(booking.createdAt, hostTimezone)}
+            Created {formatFullDateTime(booking.createdAt, displayTimezone)}
           </span>
         </DetailCell>
       </div>
@@ -1009,7 +1041,7 @@ function MeetingDetails({
           <p className="mt-2 text-xs text-status-warn">
             Cancelled
             {booking.cancelledAt
-              ? ` ${formatFullDateTime(booking.cancelledAt, hostTimezone)}`
+              ? ` ${formatFullDateTime(booking.cancelledAt, displayTimezone)}`
               : ""}
           </p>
         )}
@@ -1024,8 +1056,9 @@ function MeetingDetails({
           <ol className="mt-2 space-y-1.5 text-xs leading-5 text-ink-mute">
             {booking.history.map((change, index) => (
               <li key={`${change.changedAt}-${index}`}>
-                Moved from {formatFullDateTime(change.startAt, hostTimezone)} ·
-                changed {formatFullDateTime(change.changedAt, hostTimezone)}
+                Moved from {formatFullDateTime(change.startAt, displayTimezone)}
+                {" · "}changed{" "}
+                {formatFullDateTime(change.changedAt, displayTimezone)}
               </li>
             ))}
           </ol>

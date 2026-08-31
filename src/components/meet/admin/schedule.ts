@@ -18,6 +18,26 @@ export interface ScheduleCounts {
 
 const DAY_MS = 86_400_000;
 
+function validTimezone(value: string | null | undefined): value is string {
+  if (!value?.trim()) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value }).format(0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Prefer the browser's timezone, with the configured booking zone as fallback. */
+export function resolveScheduleDisplayTimezone(
+  browserTimezone: string | null | undefined,
+  bookingTimezone: string,
+): string {
+  if (validTimezone(browserTimezone)) return browserTimezone;
+  if (validTimezone(bookingTimezone)) return bookingTimezone;
+  return "UTC";
+}
+
 /** Resolve an instant to a stable timezone-local YYYY-MM-DD. */
 export function civilDateKey(iso: string, timeZone: string): string {
   const options: Intl.DateTimeFormatOptions = {
@@ -71,7 +91,7 @@ export function hostLabel(
 function matchesTimeframe(
   booking: AdminBooking,
   timeframe: ScheduleTimeframe,
-  hostTimezone: string,
+  displayTimezone: string,
   nowMs: number,
 ): boolean {
   const endMs = Date.parse(booking.endAt);
@@ -79,8 +99,8 @@ function matchesTimeframe(
   if (timeframe === "past") return endMs < nowMs;
   if (timeframe === "all") return true;
 
-  const today = civilOrdinal(new Date(nowMs).toISOString(), hostTimezone);
-  const bookingDay = civilOrdinal(booking.startAt, hostTimezone);
+  const today = civilOrdinal(new Date(nowMs).toISOString(), displayTimezone);
+  const bookingDay = civilOrdinal(booking.startAt, displayTimezone);
   if (timeframe === "today") return bookingDay === today;
   return endMs >= nowMs && bookingDay >= today && bookingDay < today + 7;
 }
@@ -88,7 +108,7 @@ function matchesTimeframe(
 export function filterScheduleBookings(
   bookings: AdminBooking[],
   members: BookingsResponse["members"],
-  hostTimezone: string,
+  displayTimezone: string,
   filters: ScheduleFilters,
   nowMs: number,
 ): AdminBooking[] {
@@ -96,7 +116,7 @@ export function filterScheduleBookings(
 
   return bookings
     .filter((booking) =>
-      matchesTimeframe(booking, filters.timeframe, hostTimezone, nowMs),
+      matchesTimeframe(booking, filters.timeframe, displayTimezone, nowMs),
     )
     .filter((booking) => {
       if (filters.status === "attention") {
@@ -133,19 +153,19 @@ export function filterScheduleBookings(
 
 export function scheduleCounts(
   bookings: AdminBooking[],
-  hostTimezone: string,
+  displayTimezone: string,
   nowMs: number,
 ): ScheduleCounts {
-  const today = civilOrdinal(new Date(nowMs).toISOString(), hostTimezone);
+  const today = civilOrdinal(new Date(nowMs).toISOString(), displayTimezone);
   const confirmed = bookings.filter(
     (booking) => booking.status === "confirmed",
   );
   return {
     today: confirmed.filter(
-      (booking) => civilOrdinal(booking.startAt, hostTimezone) === today,
+      (booking) => civilOrdinal(booking.startAt, displayTimezone) === today,
     ).length,
     nextSevenDays: confirmed.filter((booking) => {
-      const day = civilOrdinal(booking.startAt, hostTimezone);
+      const day = civilOrdinal(booking.startAt, displayTimezone);
       return (
         Date.parse(booking.endAt) >= nowMs &&
         day >= today &&
@@ -179,11 +199,11 @@ export interface BookingGroup {
 
 export function groupScheduleBookings(
   bookings: AdminBooking[],
-  hostTimezone: string,
+  displayTimezone: string,
 ): BookingGroup[] {
   const groups: BookingGroup[] = [];
   for (const booking of bookings) {
-    const dateKey = civilDateKey(booking.startAt, hostTimezone);
+    const dateKey = civilDateKey(booking.startAt, displayTimezone);
     const last = groups[groups.length - 1];
     if (last?.dateKey === dateKey) last.bookings.push(booking);
     else groups.push({ dateKey, bookings: [booking] });
