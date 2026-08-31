@@ -78,6 +78,7 @@ describe("civil date parse/format", () => {
     expect(parseCivilDate("2026-13-01")).toBeNull();
     expect(parseCivilDate("2026-00-10")).toBeNull();
     expect(parseCivilDate("2026-01-32")).toBeNull();
+    expect(parseCivilDate("2026-02-30")).toBeNull();
     expect(parseCivilDate("2026-08-05T00:00:00Z")).toBeNull();
   });
 });

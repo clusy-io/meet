@@ -11,6 +11,7 @@ import {
 } from "react";
 import {
   ArrowUpRight,
+  ArchiveRestore,
   CalendarDays,
   Check,
   CheckCircle2,
@@ -22,14 +23,15 @@ import {
   Globe2,
   LoaderCircle,
   LockKeyhole,
+  Mail,
   MessageSquareText,
-  PauseCircle,
   RotateCcw,
   Save,
   Send,
   Settings2,
   Sparkles,
   Trash2,
+  UserPlus,
   UserRound,
   X,
 } from "lucide-react";
@@ -40,6 +42,54 @@ const FOCUS_RING =
 const FIELD = `${FOCUS_RING} w-full rounded-lg border border-hairline bg-paper px-3 py-2.5 text-sm text-ink placeholder:text-ink-faint transition-colors hover:border-hairline-strong`;
 const SECONDARY_BUTTON = `${FOCUS_RING} inline-flex items-center justify-center gap-2 rounded-lg border border-hairline bg-paper px-3 py-2 text-sm font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-50`;
 const PRIMARY_BUTTON = `${FOCUS_RING} inline-flex items-center justify-center gap-2 rounded-lg bg-ink px-4 py-2.5 text-sm font-medium text-paper transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-45`;
+
+const TIMEZONE_LIST_ID = "meet-admin-timezones";
+const FALLBACK_TIMEZONES = [
+  "UTC",
+  "America/Los_Angeles",
+  "America/Denver",
+  "America/Chicago",
+  "America/New_York",
+  "America/Toronto",
+  "America/Vancouver",
+  "America/Sao_Paulo",
+  "Europe/London",
+  "Europe/Dublin",
+  "Europe/Paris",
+  "Europe/Berlin",
+  "Europe/Istanbul",
+  "Africa/Cairo",
+  "Africa/Lagos",
+  "Africa/Johannesburg",
+  "Asia/Dubai",
+  "Asia/Kolkata",
+  "Asia/Singapore",
+  "Asia/Hong_Kong",
+  "Asia/Tokyo",
+  "Asia/Seoul",
+  "Australia/Perth",
+  "Australia/Sydney",
+  "Pacific/Auckland",
+];
+
+function supportedTimezones(): string[] {
+  const values =
+    typeof Intl.supportedValuesOf === "function"
+      ? Intl.supportedValuesOf("timeZone")
+      : FALLBACK_TIMEZONES;
+  return [...new Set(["UTC", ...values])];
+}
+
+function useMinuteClock(): void {
+  const [, setMinute] = useState(() => Math.floor(Date.now() / 60_000));
+  useEffect(() => {
+    const timer = window.setInterval(
+      () => setMinute(Math.floor(Date.now() / 60_000)),
+      30_000,
+    );
+    return () => window.clearInterval(timer);
+  }, []);
+}
 
 const WEEKDAYS = [
   { value: 1, short: "Mon", long: "Monday" },
@@ -52,8 +102,17 @@ const WEEKDAYS = [
 ] as const;
 
 interface PageDraft {
+  /** Editable identity; the URL key remains immutable. */
+  memberName: string;
+  memberEmail: string;
+  /** Text appended after the fixed public prefix “Book a call with”. */
   headline: string;
   blurb: string;
+  /** Permanent/target zone; blank inherits the team zone. */
+  timezone: string;
+  /** Optional current zone used until moveDate. Both move fields live together. */
+  moveFromTimezone: string;
+  moveDate: string;
   durationMinutes: string;
   slotStepMinutes: string;
   windowStart: string;
@@ -66,9 +125,13 @@ interface PageDraft {
   /** Empty means “leave the existing secret alone.” */
   slackWebhookUrl: string;
 }
+
 interface DraftPreview {
   headline: string;
   blurb: string;
+  timezone: string;
+  timezoneToday: string;
+  timezoneUntil: { beforeDate: string; timezone: string } | null;
   durationMinutes: number;
   slotStepMinutes: number;
   windowStart: string;
@@ -82,12 +145,36 @@ interface DraftPreview {
 
 type Notice = { tone: "success" | "error"; text: string };
 
+interface AddMemberDraft {
+  name: string;
+  email: string;
+  key: string;
+  timezone: string;
+}
+
+function slugForName(name: string): string {
+  return name
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48)
+    .replace(/-+$/g, "");
+}
+
 function draftFor(page: PersonalPage): PageDraft {
   return {
-    // Older rows stored only the member name. Treat that legacy value as the
-    // inherited headline instead of showing a one-word heading in the editor.
+    memberName: page.memberName,
+    memberEmail: page.memberEmail,
+    // Older rows stored the member name as a headline sentinel. Treat that as
+    // inherited so opening the editor never turns legacy data into a custom
+    // suffix.
     headline: page.headline === page.memberName ? "" : (page.headline ?? ""),
     blurb: page.blurb ?? "",
+    timezone: page.overrides.timezone ?? "",
+    moveFromTimezone: page.overrides.timezoneUntil?.timezone ?? "",
+    moveDate: page.overrides.timezoneUntil?.beforeDate ?? "",
     durationMinutes:
       page.overrides.durationMinutes === null
         ? ""
@@ -135,17 +222,98 @@ function integerOrDefault(value: string, fallback: number): number {
   return Number.isInteger(number) ? number : fallback;
 }
 
+function timezoneIsValid(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value }).format(0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function formatLocalTime(timezone: string): string {
+  try {
+    return new Intl.DateTimeFormat("en-GB", {
+      timeZone: timezone,
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(new Date());
+  } catch {
+    return "—";
+  }
+}
+
+function weekdaySummary(days: number[]): string {
+  if (days.length === 7) return "Every day";
+  if (
+    days.length === 5 &&
+    [1, 2, 3, 4, 5].every((weekday) => days.includes(weekday))
+  ) {
+    return "Monday–Friday";
+  }
+  return WEEKDAYS.filter((weekday) => days.includes(weekday.value))
+    .map((weekday) => weekday.short)
+    .join(", ");
+}
+
+function civilDateIsValid(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return (
+    date.getUTCFullYear() === year &&
+    date.getUTCMonth() === month - 1 &&
+    date.getUTCDate() === day
+  );
+}
+
+function civilToday(timezone: string): string | null {
+  if (!timezoneIsValid(timezone)) return null;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const value = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((part) => part.type === type)?.value;
+  const year = value("year");
+  const month = value("month");
+  const day = value("day");
+  return year && month && day ? `${year}-${month}-${day}` : null;
+}
+
 function previewFor(
   draft: PageDraft,
   page: PersonalPage,
   defaults: PersonalPagesResponse["defaults"],
 ): DraftPreview {
+  const timezone = draft.timezone.trim() || defaults.timezone;
+  const hasCompleteMove =
+    Boolean(draft.moveDate.trim()) && Boolean(draft.moveFromTimezone.trim());
+  const timezoneUntil = hasCompleteMove
+    ? {
+        beforeDate: draft.moveDate.trim(),
+        timezone: draft.moveFromTimezone.trim(),
+      }
+    : defaults.timezoneUntil;
+  const today = civilToday(timezone);
+  const timezoneToday =
+    timezoneUntil && today && today < timezoneUntil.beforeDate
+      ? timezoneUntil.timezone
+      : timezoneIsValid(timezone)
+        ? timezone
+        : defaults.timezoneToday;
   return {
-    // Stored headlines are deliberately suffixes: the public page has always
-    // rendered `Book a call with ${headline}`. Keep that contract visible in
-    // the editor so an existing custom value never changes meaning.
-    headline: `Book a call with ${draft.headline.trim() || page.memberName}`,
+    headline: `Book a call with ${draft.headline.trim() || draft.memberName.trim() || page.memberName}`,
     blurb: draft.blurb.trim(),
+    timezone,
+    timezoneToday,
+    timezoneUntil,
     durationMinutes: integerOrDefault(
       draft.durationMinutes,
       defaults.durationMinutes,
@@ -204,10 +372,22 @@ function validateDraft(
   defaults: PersonalPagesResponse["defaults"],
 ): string[] {
   const errors: string[] = [];
+  const memberName = draft.memberName.trim();
+  const memberEmail = draft.memberEmail.trim();
   const headline = draft.headline.trim();
   const blurb = draft.blurb.trim();
   const eventTitle = draft.eventTitle.trim();
   const eventDescription = draft.eventDescription.trim();
+
+  if (!memberName || memberName.length > 80) {
+    errors.push("Member name must be between 1 and 80 characters.");
+  }
+  if (
+    memberEmail.length > 254 ||
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(memberEmail)
+  ) {
+    errors.push("Member email must be a valid email address.");
+  }
 
   if (headline.length > 80)
     errors.push("Headline must be 80 characters or fewer.");
@@ -217,6 +397,28 @@ function validateDraft(
     errors.push("Event title must be 200 characters or fewer.");
   if (eventDescription.length > 2000) {
     errors.push("Event description must be 2,000 characters or fewer.");
+  }
+
+  const timezone = draft.timezone.trim();
+  if (timezone && !timezoneIsValid(timezone)) {
+    errors.push(
+      "Host timezone must be a valid IANA timezone, such as Europe/London.",
+    );
+  }
+  const moveFromTimezone = draft.moveFromTimezone.trim();
+  const moveDate = draft.moveDate.trim();
+  if (Boolean(moveFromTimezone) !== Boolean(moveDate)) {
+    errors.push(
+      "A scheduled timezone change needs both the current timezone and the change date.",
+    );
+  } else if (moveFromTimezone && !timezoneIsValid(moveFromTimezone)) {
+    errors.push(
+      "The current timezone for a scheduled change must be a valid IANA timezone.",
+    );
+  } else if (moveDate && !civilDateIsValid(moveDate)) {
+    errors.push(
+      "Timezone change date must be a real date in YYYY-MM-DD format.",
+    );
   }
 
   const readInteger = (
@@ -322,9 +524,12 @@ async function responseMessage(
 
 export function BookingPagesView({
   onUnauthorized,
+  onRosterChange,
 }: {
   onUnauthorized: () => void;
+  onRosterChange: () => void;
 }) {
+  useMinuteClock();
   const unauthorizedRef = useRef(onUnauthorized);
   const [phase, setPhase] = useState<"loading" | "ready" | "failed">("loading");
   const [data, setData] = useState<PersonalPagesResponse | null>(null);
@@ -334,7 +539,11 @@ export function BookingPagesView({
   const [livePendingKey, setLivePendingKey] = useState<string | null>(null);
   const [pageErrors, setPageErrors] = useState<Record<string, string>>({});
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [restoringKey, setRestoringKey] = useState<string | null>(null);
+  const [rosterNotice, setRosterNotice] = useState<Notice | null>(null);
   const editorAnchorRef = useRef<HTMLDivElement>(null);
+  const addTriggerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     unauthorizedRef.current = onUnauthorized;
@@ -513,6 +722,108 @@ export function BookingPagesView({
     }
   };
 
+  const refreshRoster = useCallback(
+    async (selectedMemberKey?: string) => {
+      const next = await readPages();
+      if (!next) return;
+      installData(next);
+      if (
+        selectedMemberKey &&
+        next.pages.some((page) => page.memberKey === selectedMemberKey)
+      ) {
+        setSelectedKey(selectedMemberKey);
+      }
+      onRosterChange();
+    },
+    [installData, onRosterChange, readPages],
+  );
+
+  const archiveMember = useCallback(
+    async (page: PersonalPage) => {
+      const response = await fetch(
+        `/api/meet/admin/members/${encodeURIComponent(page.memberKey)}`,
+        { method: "DELETE" },
+      );
+      if (response.status === 401) {
+        unauthorizedRef.current();
+        throw new Error("Your admin session expired.");
+      }
+      if (!response.ok) {
+        const message = await responseMessage(
+          response,
+          `Could not remove ${page.memberName}.`,
+        );
+        // A 409 can be the result of a concurrent roster/booking change and
+        // the server may have compensated a staged archive. Re-read before
+        // surfacing the error so the editor never keeps a stale member state.
+        // Preserve the archive error if that defensive refresh also fails.
+        try {
+          await refreshRoster(page.memberKey);
+        } catch {
+          // A later manual refresh can retry.
+        }
+        throw new Error(message);
+      }
+      await refreshRoster();
+      setRosterNotice({
+        tone: "success",
+        text: `${page.memberName} was removed from new bookings. Their history and settings are still safe.`,
+      });
+    },
+    [refreshRoster],
+  );
+
+  const restoreMember = useCallback(
+    async (member: { key: string; name: string }) => {
+      if (restoringKey) return;
+      setRestoringKey(member.key);
+      setRosterNotice(null);
+      try {
+        const response = await fetch(
+          `/api/meet/admin/members/${encodeURIComponent(member.key)}`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ archived: false }),
+          },
+        );
+        if (response.status === 401) {
+          unauthorizedRef.current();
+          return;
+        }
+        if (!response.ok) {
+          throw new Error(
+            await responseMessage(
+              response,
+              `Could not restore ${member.name}.`,
+            ),
+          );
+        }
+        await refreshRoster(member.key);
+        setRosterNotice({
+          tone: "success",
+          text: `${member.name} is back. Check calendar readiness, review their rules, then publish their personal page when ready.`,
+        });
+      } catch (error) {
+        setRosterNotice({
+          tone: "error",
+          text:
+            error instanceof Error
+              ? error.message
+              : `Could not restore ${member.name}.`,
+        });
+      } finally {
+        setRestoringKey(null);
+      }
+    },
+    [refreshRoster, restoringKey],
+  );
+
+  const closeAddSheet = useCallback(() => {
+    setAddOpen(false);
+    window.requestAnimationFrame(() => addTriggerRef.current?.focus());
+  }, []);
+
   if (phase === "loading") {
     return (
       <div className="flex min-h-[28rem] items-center justify-center rounded-2xl border border-hairline bg-paper-raise">
@@ -556,21 +867,83 @@ export function BookingPagesView({
 
   if (data.pages.length === 0) {
     return (
-      <div className="flex min-h-[28rem] items-center justify-center rounded-2xl border border-dashed border-hairline-strong bg-paper-raise px-6">
-        <div className="max-w-md text-center">
-          <UserRound
-            className="mx-auto h-7 w-7 text-ink-faint"
-            strokeWidth={1.4}
+      <section aria-labelledby="empty-members-heading">
+        <datalist id={TIMEZONE_LIST_ID}>
+          {supportedTimezones().map((timezone) => (
+            <option key={timezone} value={timezone} />
+          ))}
+        </datalist>
+        {addOpen && (
+          <AddMemberSheet
+            defaultTimezone={data.defaults.timezone}
+            onCancel={closeAddSheet}
+            onUnauthorized={() => unauthorizedRef.current()}
+            onAdded={async (member) => {
+              setAddOpen(false);
+              await refreshRoster(member.key);
+            }}
           />
-          <h2 className="mt-4 font-serif-display text-2xl text-ink">
-            No booking pages yet
-          </h2>
-          <p className="mt-2 text-sm leading-6 text-ink-mute">
-            Add a team member to the Meet configuration and their personal
-            booking page will appear here.
-          </p>
+        )}
+        <div className="flex min-h-[28rem] items-center justify-center rounded-2xl border border-dashed border-hairline-strong bg-paper-raise px-6">
+          <div className="max-w-md text-center">
+            <UserRound
+              className="mx-auto h-7 w-7 text-ink-faint"
+              strokeWidth={1.4}
+            />
+            <h2
+              id="empty-members-heading"
+              className="mt-4 font-serif-display text-2xl text-ink"
+            >
+              Build your Meet team
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-ink-mute">
+              Add the first member with their own timezone and booking rules, or
+              restore someone previously removed.
+            </p>
+            <button
+              ref={addTriggerRef}
+              type="button"
+              className={`${PRIMARY_BUTTON} mt-5`}
+              onClick={() => setAddOpen(true)}
+            >
+              <UserPlus className="h-4 w-4" aria-hidden />
+              Add first member
+            </button>
+            {(data.archivedMembers ?? []).length > 0 && (
+              <div className="mt-7 border-t border-hairline pt-5 text-left">
+                <p className="text-xs font-semibold text-ink">
+                  Previously removed
+                </p>
+                <div className="mt-2 space-y-1">
+                  {(data.archivedMembers ?? []).map((member) => (
+                    <div
+                      key={member.key}
+                      className="flex items-center justify-between gap-3 py-2 text-xs"
+                    >
+                      <span className="truncate text-ink-mute">
+                        {member.name}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={restoringKey !== null}
+                        onClick={() => void restoreMember(member)}
+                        className={`${SECONDARY_BUTTON} !min-h-9 !px-2 !py-1 text-[11px]`}
+                      >
+                        {restoringKey === member.key ? (
+                          <LoaderCircle className="h-3.5 w-3.5 motion-safe:animate-spin" />
+                        ) : (
+                          <ArchiveRestore className="h-3.5 w-3.5" />
+                        )}
+                        Restore
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
-      </div>
+      </section>
     );
   }
 
@@ -578,56 +951,110 @@ export function BookingPagesView({
     data.pages.find((page) => page.memberKey === selectedKey) ?? data.pages[0];
   const liveCount = data.pages.filter((page) => page.enabled).length;
   const attentionCount = data.pages.filter(
-    (page) => page.enabled && !page.calendarReady,
+    (page) => !page.calendarReady,
   ).length;
 
   return (
     <section aria-labelledby="booking-pages-heading">
+      <datalist id={TIMEZONE_LIST_ID}>
+        {supportedTimezones().map((timezone) => (
+          <option key={timezone} value={timezone} />
+        ))}
+      </datalist>
+      {addOpen && (
+        <AddMemberSheet
+          defaultTimezone={data.defaults.timezone}
+          onCancel={closeAddSheet}
+          onUnauthorized={() => unauthorizedRef.current()}
+          onAdded={async (member) => {
+            setAddOpen(false);
+            await refreshRoster(member.key);
+            setRosterNotice({
+              tone: "success",
+              text: `${member.name} was added. Their personal page starts paused; connect a calendar so they can join team availability, review the rules, then publish the page.`,
+            });
+          }}
+        />
+      )}
       <div className="flex flex-col gap-5 border-b border-hairline pb-7 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h2
             id="booking-pages-heading"
             className="font-serif-display text-4xl font-bold tracking-[-0.045em] text-ink sm:text-5xl"
           >
-            Booking pages
+            Members
           </h2>
           <p className="mt-3 max-w-2xl text-sm leading-6 text-ink-mute">
-            Shape what each host says, when they can be booked, and where the
-            invitation goes.
+            One place for every host’s timezone, working pattern, booking rules,
+            page and notifications.
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-mute">
-          <span>{data.pages.length} hosts</span>
-          <span aria-hidden className="text-hairline-strong">
-            /
-          </span>
-          <span>{liveCount} live</span>
-          <span aria-hidden className="text-hairline-strong">
-            /
-          </span>
-          <span className={attentionCount > 0 ? "text-status-warn" : undefined}>
-            {attentionCount > 0
-              ? `${attentionCount} needs attention`
-              : "All calendars ready"}
-          </span>
+        <div className="flex flex-col items-start gap-3 sm:items-end">
+          <button
+            ref={addTriggerRef}
+            type="button"
+            className={PRIMARY_BUTTON}
+            onClick={() => {
+              setRosterNotice(null);
+              setAddOpen(true);
+            }}
+          >
+            <UserPlus className="h-4 w-4" aria-hidden />
+            Add member
+          </button>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-mute">
+            <span>{data.pages.length} active</span>
+            <span aria-hidden className="text-hairline-strong">
+              /
+            </span>
+            <span>{liveCount} personal pages live</span>
+            <span aria-hidden className="text-hairline-strong">
+              /
+            </span>
+            <span
+              className={attentionCount > 0 ? "text-status-warn" : undefined}
+            >
+              {attentionCount > 0
+                ? `${attentionCount} needs a calendar`
+                : "All calendars ready"}
+            </span>
+          </div>
         </div>
       </div>
+
+      {rosterNotice && (
+        <div
+          className={`mt-5 flex items-start gap-2.5 border-l-2 px-4 py-3 text-sm ${
+            rosterNotice.tone === "success"
+              ? "border-status-ok bg-status-ok/[0.04] text-ink-soft"
+              : "border-status-warn bg-status-warn/[0.05] text-ink-soft"
+          }`}
+          role={rosterNotice.tone === "success" ? "status" : "alert"}
+        >
+          {rosterNotice.tone === "success" ? (
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-status-ok" />
+          ) : (
+            <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-status-warn" />
+          )}
+          <p className="leading-6">{rosterNotice.text}</p>
+        </div>
+      )}
 
       <div className="mt-8 grid min-w-0 items-start gap-6 lg:grid-cols-[minmax(13rem,0.52fr)_minmax(0,2.5fr)] lg:gap-8">
         <aside
           className="min-w-0 border-y border-hairline lg:sticky lg:top-32"
-          aria-label="Booking pages"
+          aria-label="Members"
         >
           <div className="flex items-center justify-between border-b border-hairline py-3">
             <div>
-              <p className="text-sm font-semibold text-ink">Your pages</p>
-              <p className="mt-0.5 text-xs text-ink-faint">Select a host</p>
+              <p className="text-sm font-semibold text-ink">Active members</p>
+              <p className="mt-0.5 text-xs text-ink-faint">Select a person</p>
             </div>
             <span className="font-mono text-[11px] text-ink-faint">
               {data.pages.length}
             </span>
           </div>
-          <div className="flex max-w-full snap-x overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden lg:block">
+          <div className="flex snap-x overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden lg:block">
             {data.pages.map((page) => (
               <PageListCard
                 key={page.memberKey}
@@ -643,6 +1070,43 @@ export function BookingPagesView({
               />
             ))}
           </div>
+          {(data.archivedMembers ?? []).length > 0 && (
+            <div className="border-t border-hairline py-3">
+              <p className="px-3 text-[10px] font-semibold uppercase tracking-[0.12em] text-ink-faint">
+                Removed
+              </p>
+              <div className="mt-2 space-y-1">
+                {(data.archivedMembers ?? []).map((member) => (
+                  <div
+                    key={member.key}
+                    className="flex items-center justify-between gap-3 px-3 py-2 text-xs"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate font-medium text-ink-mute">
+                        {member.name}
+                      </p>
+                      <p className="truncate text-[11px] text-ink-faint">
+                        /{member.key}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={restoringKey !== null}
+                      onClick={() => void restoreMember(member)}
+                      className={`${FOCUS_RING} inline-flex min-h-9 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-ink-mute hover:bg-paper-raise hover:text-ink disabled:opacity-50`}
+                    >
+                      {restoringKey === member.key ? (
+                        <LoaderCircle className="h-3.5 w-3.5 motion-safe:animate-spin" />
+                      ) : (
+                        <ArchiveRestore className="h-3.5 w-3.5" />
+                      )}
+                      Restore
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </aside>
 
         <div ref={editorAnchorRef} className="min-w-0 scroll-mt-32">
@@ -650,7 +1114,6 @@ export function BookingPagesView({
             key={selectedPage.memberKey}
             page={selectedPage}
             defaults={selectedPage.inherited}
-            hostTimezone={data.hostTimezone}
             livePending={livePendingKey !== null}
             liveError={pageErrors[selectedPage.memberKey]}
             onToggleLive={(enabled) => void toggleLive(selectedPage, enabled)}
@@ -659,10 +1122,415 @@ export function BookingPagesView({
             onUnauthorized={() => unauthorizedRef.current()}
             onRefetch={refetchPage}
             onPagePatch={patchPageLocally}
+            onArchive={archiveMember}
+            onRosterChange={onRosterChange}
           />
         </div>
       </div>
     </section>
+  );
+}
+
+function AddMemberSheet({
+  defaultTimezone,
+  onCancel,
+  onUnauthorized,
+  onAdded,
+}: {
+  defaultTimezone: string;
+  onCancel: () => void;
+  onUnauthorized: () => void;
+  onAdded: (member: {
+    key: string;
+    name: string;
+    email: string;
+  }) => Promise<void>;
+}) {
+  const browserTimezone = useMemo(() => {
+    const detected = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return detected && timezoneIsValid(detected) ? detected : defaultTimezone;
+  }, [defaultTimezone]);
+  const [draft, setDraft] = useState<AddMemberDraft>({
+    name: "",
+    email: "",
+    key: "",
+    timezone: browserTimezone,
+  });
+  const [keyEdited, setKeyEdited] = useState(false);
+  const [pending, setPending] = useState(false);
+  const pendingRef = useRef(false);
+  const [error, setError] = useState<string | null>(null);
+  const [errorField, setErrorField] = useState<
+    "name" | "email" | "key" | "timezone" | null
+  >(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const emailRef = useRef<HTMLInputElement>(null);
+  const keyRef = useRef<HTMLInputElement>(null);
+  const timezoneRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    pendingRef.current = pending;
+  }, [pending]);
+
+  useEffect(() => {
+    nameRef.current?.focus();
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !pendingRef.current) onCancel();
+      if (event.key !== "Tab") return;
+      const controls = panelRef.current?.querySelectorAll<HTMLElement>(
+        "button:not([disabled]), input:not([disabled])",
+      );
+      if (!controls || controls.length === 0) return;
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [onCancel]);
+
+  const updateName = (name: string) => {
+    setError(null);
+    setErrorField(null);
+    setDraft((current) => ({
+      ...current,
+      name,
+      key: keyEdited ? current.key : slugForName(name),
+    }));
+  };
+
+  const showFieldError = (
+    field: "name" | "email" | "key" | "timezone",
+    message: string,
+  ) => {
+    setError(message);
+    setErrorField(field);
+    const refs = {
+      name: nameRef,
+      email: emailRef,
+      key: keyRef,
+      timezone: timezoneRef,
+    };
+    window.requestAnimationFrame(() => refs[field].current?.focus());
+  };
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (pending) return;
+    const name = draft.name.trim();
+    const email = draft.email.trim().toLowerCase();
+    const key = draft.key.trim().toLowerCase();
+    const timezone = draft.timezone.trim();
+    if (!name) {
+      showFieldError("name", "Enter the member’s name.");
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      showFieldError("email", "Enter a valid notification email.");
+      return;
+    }
+    if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(key) || key.length > 48) {
+      showFieldError(
+        "key",
+        "The booking URL can use lowercase letters, numbers and single hyphens.",
+      );
+      return;
+    }
+    if (key === "admin" || key === "manage") {
+      showFieldError(
+        "key",
+        `“${key}” is reserved. Choose a different booking URL.`,
+      );
+      return;
+    }
+    if (!timezoneIsValid(timezone)) {
+      showFieldError(
+        "timezone",
+        "Choose a valid IANA timezone, such as Europe/London.",
+      );
+      return;
+    }
+
+    setPending(true);
+    setError(null);
+    try {
+      const response = await fetch("/api/meet/admin/members", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, name, email, timezone }),
+      });
+      if (response.status === 401) {
+        onUnauthorized();
+        return;
+      }
+      if (!response.ok) {
+        throw new Error(
+          await responseMessage(response, "Could not add this member."),
+        );
+      }
+      const payload = (await response.json()) as {
+        member?: { key: string; name: string; email: string };
+      };
+      await onAdded(payload.member ?? { key, name, email });
+    } catch (reason) {
+      setErrorField(null);
+      setError(
+        reason instanceof Error ? reason.message : "Could not add this member.",
+      );
+    } finally {
+      setPending(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] flex justify-end bg-ink/25 backdrop-blur-[2px]"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget && !pending) onCancel();
+      }}
+    >
+      <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="add-member-title"
+        aria-describedby="add-member-intro"
+        className="flex h-full w-full max-w-lg flex-col overflow-y-auto border-l border-hairline bg-paper shadow-2xl"
+      >
+        <div className="sticky top-0 z-10 flex items-start justify-between border-b border-hairline bg-paper/95 px-5 py-5 backdrop-blur sm:px-7">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-ink-faint">
+              New host
+            </p>
+            <h3
+              id="add-member-title"
+              className="mt-1 font-serif-display text-3xl font-bold tracking-[-0.035em] text-ink"
+            >
+              Add a member
+            </h3>
+          </div>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={onCancel}
+            className={`${FOCUS_RING} flex h-11 w-11 items-center justify-center rounded-full text-ink-mute hover:bg-paper-raise hover:text-ink disabled:opacity-50`}
+            aria-label="Close add member"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+
+        <form
+          noValidate
+          onSubmit={(event) => void submit(event)}
+          className="flex flex-1 flex-col"
+        >
+          <div className="flex-1 px-5 py-7 sm:px-7">
+            <p
+              id="add-member-intro"
+              className="max-w-md text-sm leading-6 text-ink-mute"
+            >
+              Create their place in Meet now. The personal page starts paused,
+              so you can connect a calendar and review every rule before it goes
+              live.
+            </p>
+
+            <div className="mt-8 space-y-6">
+              <label className="block" htmlFor="new-member-name">
+                <FieldHeader
+                  label="Name"
+                  custom={Boolean(draft.name.trim())}
+                  detail="Required"
+                />
+                <input
+                  ref={nameRef}
+                  id="new-member-name"
+                  className={FIELD}
+                  value={draft.name}
+                  required
+                  maxLength={80}
+                  autoComplete="name"
+                  placeholder="Ada Lovelace"
+                  aria-invalid={errorField === "name"}
+                  aria-describedby={
+                    errorField === "name" ? "add-member-error" : undefined
+                  }
+                  onChange={(event) => updateName(event.target.value)}
+                />
+              </label>
+
+              <label className="block" htmlFor="new-member-email">
+                <FieldHeader
+                  label="Notification email"
+                  custom={Boolean(draft.email.trim())}
+                  detail="Required"
+                />
+                <input
+                  ref={emailRef}
+                  id="new-member-email"
+                  type="email"
+                  className={FIELD}
+                  value={draft.email}
+                  required
+                  maxLength={254}
+                  autoComplete="email"
+                  placeholder="ada@company.com"
+                  aria-invalid={errorField === "email"}
+                  aria-describedby={`new-member-email-hint${errorField === "email" ? " add-member-error" : ""}`}
+                  onChange={(event) => {
+                    setError(null);
+                    setErrorField(null);
+                    setDraft((current) => ({
+                      ...current,
+                      email: event.target.value,
+                    }));
+                  }}
+                />
+                <p
+                  id="new-member-email-hint"
+                  className="mt-1.5 text-[11px] leading-5 text-ink-faint"
+                >
+                  Booking updates and calendar invitations use this address.
+                </p>
+              </label>
+
+              <label className="block" htmlFor="new-member-key">
+                <FieldHeader
+                  label="Booking URL"
+                  custom={Boolean(draft.key.trim())}
+                  detail="Permanent"
+                />
+                <span className="flex min-w-0 overflow-hidden rounded-lg border border-hairline bg-paper focus-within:ring-2 focus-within:ring-accent/60 focus-within:ring-offset-2 focus-within:ring-offset-paper">
+                  <span className="flex shrink-0 items-center border-r border-hairline bg-paper-raise px-3 font-mono text-xs text-ink-faint">
+                    /
+                  </span>
+                  <input
+                    ref={keyRef}
+                    id="new-member-key"
+                    className="min-w-0 flex-1 border-0 bg-paper px-3 py-2.5 font-mono text-sm text-ink placeholder:text-ink-faint focus:outline-none"
+                    value={draft.key}
+                    required
+                    maxLength={48}
+                    placeholder="ada-lovelace"
+                    aria-invalid={errorField === "key"}
+                    aria-describedby={`new-member-key-hint${errorField === "key" ? " add-member-error" : ""}`}
+                    onChange={(event) => {
+                      setError(null);
+                      setErrorField(null);
+                      setKeyEdited(true);
+                      setDraft((current) => ({
+                        ...current,
+                        key: event.target.value.toLowerCase(),
+                      }));
+                    }}
+                  />
+                </span>
+                <p
+                  id="new-member-key-hint"
+                  className="mt-1.5 text-[11px] leading-5 text-ink-faint"
+                >
+                  Choose carefully. The slug stays fixed so old booking links
+                  and history remain trustworthy.
+                </p>
+              </label>
+
+              <label className="block" htmlFor="new-member-timezone">
+                <FieldHeader
+                  label="Working timezone"
+                  custom
+                  detail="Per member"
+                />
+                <input
+                  ref={timezoneRef}
+                  id="new-member-timezone"
+                  className={FIELD}
+                  list={TIMEZONE_LIST_ID}
+                  value={draft.timezone}
+                  required
+                  maxLength={64}
+                  placeholder={defaultTimezone}
+                  aria-invalid={errorField === "timezone"}
+                  aria-describedby={`new-member-timezone-hint${errorField === "timezone" ? " add-member-error" : ""}`}
+                  onChange={(event) => {
+                    setError(null);
+                    setErrorField(null);
+                    setDraft((current) => ({
+                      ...current,
+                      timezone: event.target.value,
+                    }));
+                  }}
+                />
+                <p
+                  id="new-member-timezone-hint"
+                  className="mt-1.5 text-[11px] leading-5 text-ink-faint"
+                >
+                  Their hours and bookable days are interpreted in this
+                  timezone, independently of every visitor.
+                </p>
+              </label>
+            </div>
+
+            {error && (
+              <div
+                id="add-member-error"
+                className="mt-6 flex items-start gap-2.5 border-l-2 border-status-warn bg-status-warn/[0.05] px-4 py-3 text-sm text-ink-soft"
+                role="alert"
+              >
+                <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-status-warn" />
+                <p>{error}</p>
+              </div>
+            )}
+
+            <div className="mt-8 border-y border-hairline py-4">
+              <p className="text-xs font-semibold text-ink">
+                What happens next
+              </p>
+              <ol className="mt-2 grid gap-2 text-xs leading-5 text-ink-mute sm:grid-cols-2">
+                <li>1. Connect their calendar</li>
+                <li>2. Review timezone and hours</li>
+                <li>3. Customize booking rules</li>
+                <li>4. Publish their page</li>
+              </ol>
+            </div>
+          </div>
+
+          <div className="sticky bottom-0 flex gap-2 border-t border-hairline bg-paper/95 px-5 py-4 backdrop-blur sm:px-7">
+            <button
+              type="button"
+              disabled={pending}
+              onClick={onCancel}
+              className={`${SECONDARY_BUTTON} flex-1`}
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={pending}
+              className={`${PRIMARY_BUTTON} flex-1`}
+            >
+              {pending ? (
+                <LoaderCircle className="h-4 w-4 motion-safe:animate-spin" />
+              ) : (
+                <UserPlus className="h-4 w-4" />
+              )}
+              {pending ? "Adding…" : "Add member"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }
 
@@ -683,19 +1551,17 @@ function PageListCard({
   onSelect: () => void;
   onCopy: () => void;
 }) {
-  const health = !page.enabled
-    ? { label: "Paused", className: "text-ink-faint", icon: <PauseCircle /> }
-    : page.calendarReady
-      ? {
-          label: "Healthy",
-          className: "text-status-ok",
-          icon: <CheckCircle2 />,
-        }
-      : {
-          label: "Calendar needed",
-          className: "text-status-warn",
-          icon: <CircleAlert />,
-        };
+  const health = page.calendarReady
+    ? {
+        label: "Calendar ready",
+        className: "text-status-ok",
+        icon: <CheckCircle2 />,
+      }
+    : {
+        label: "Calendar needed",
+        className: "text-status-warn",
+        icon: <CircleAlert />,
+      };
 
   return (
     <article
@@ -719,7 +1585,7 @@ function PageListCard({
               {page.memberName}
             </p>
             <span
-              className={`h-1.5 w-1.5 shrink-0 rounded-full ${page.enabled ? (page.calendarReady ? "bg-status-ok" : "bg-status-warn") : "bg-ink-faint"}`}
+              className={`h-1.5 w-1.5 shrink-0 rounded-full ${page.calendarReady ? "bg-status-ok" : "bg-status-warn"}`}
               aria-hidden
             />
           </div>
@@ -731,6 +1597,13 @@ function PageListCard({
             </span>
             {health.label}
           </p>
+          <p className="mt-1 text-[11px] text-ink-faint">
+            Personal page {page.enabled ? "live" : "paused"}
+          </p>
+          <p className="mt-1 truncate text-[11px] text-ink-faint">
+            {formatLocalTime(page.effective.timezoneToday)} ·{" "}
+            {page.effective.timezoneToday.replaceAll("_", " ")}
+          </p>
         </div>
       </div>
 
@@ -741,7 +1614,7 @@ function PageListCard({
         <button
           type="button"
           onClick={onCopy}
-          className={`${FOCUS_RING} rounded p-1 text-ink-faint hover:text-ink`}
+          className={`${FOCUS_RING} flex h-10 w-10 items-center justify-center rounded text-ink-faint hover:bg-paper-raise hover:text-ink`}
           aria-label={`Copy ${page.memberName} page link`}
         >
           {copied ? (
@@ -754,7 +1627,7 @@ function PageListCard({
           href={page.url}
           target="_blank"
           rel="noreferrer"
-          className={`${FOCUS_RING} rounded p-1 text-ink-faint hover:text-ink`}
+          className={`${FOCUS_RING} flex h-10 w-10 items-center justify-center rounded text-ink-faint hover:bg-paper-raise hover:text-ink`}
           aria-label={`Open ${page.memberName} booking page`}
         >
           <ArrowUpRight className="h-3.5 w-3.5" />
@@ -768,7 +1641,7 @@ function PageListCard({
         aria-pressed={selected}
         className={`${FOCUS_RING} mt-2 flex w-full items-center justify-between py-1 pl-11 pr-2 text-xs font-medium transition-colors disabled:cursor-wait disabled:opacity-50 ${selected ? "text-accent" : "text-ink-mute hover:text-ink"}`}
       >
-        {selected ? "Customizing" : "Customize"}
+        {selected ? "Editing member" : "Edit member"}
         <ChevronRight
           className={`h-3.5 w-3.5 motion-safe:transition-transform ${selected ? "translate-x-0.5" : ""}`}
         />
@@ -827,7 +1700,6 @@ function LiveSwitch({
 function BookingPageEditor({
   page,
   defaults,
-  hostTimezone,
   livePending,
   liveError,
   onToggleLive,
@@ -836,10 +1708,11 @@ function BookingPageEditor({
   onUnauthorized,
   onRefetch,
   onPagePatch,
+  onArchive,
+  onRosterChange,
 }: {
   page: PersonalPage;
   defaults: PersonalPagesResponse["defaults"];
-  hostTimezone: string;
   livePending: boolean;
   liveError?: string;
   onToggleLive: (enabled: boolean) => void;
@@ -848,6 +1721,8 @@ function BookingPageEditor({
   onUnauthorized: () => void;
   onRefetch: (memberKey: string) => Promise<PersonalPage | null>;
   onPagePatch: (memberKey: string, patch: Partial<PersonalPage>) => void;
+  onArchive: (page: PersonalPage) => Promise<void>;
+  onRosterChange: () => void;
 }) {
   const initialDraft = useMemo(() => draftFor(page), [page]);
   const [draft, setDraft] = useState<PageDraft>(initialDraft);
@@ -861,19 +1736,25 @@ function BookingPageEditor({
   const [validationErrors, setValidationErrors] = useState<string[]>([]);
   const [resetConfirming, setResetConfirming] = useState(false);
   const [webhookClearConfirming, setWebhookClearConfirming] = useState(false);
+  const [archiveConfirming, setArchiveConfirming] = useState(false);
+  const [archiving, setArchiving] = useState(false);
+  const [archiveError, setArchiveError] = useState<string | null>(null);
   const validationRef = useRef<HTMLDivElement>(null);
   const webhookClearTriggerRef = useRef<HTMLButtonElement>(null);
   const webhookClearConfirmRef = useRef<HTMLButtonElement>(null);
-  const restoreWebhookClearFocusRef = useRef(false);
+  const archiveTriggerRef = useRef<HTMLButtonElement>(null);
+  const archiveHeadingRef = useRef<HTMLHeadingElement>(null);
 
   const dirty = !draftsMatch(draft, baseline);
-  const mutationPending = saving || clearingWebhook;
+  const mutationPending = saving || clearingWebhook || archiving;
   const interactionPending = mutationPending || livePending;
   const preview = useMemo(
     () => previewFor(draft, page, defaults),
     [defaults, draft, page],
   );
   const customCount = [
+    draft.timezone,
+    draft.moveFromTimezone || draft.moveDate,
     draft.durationMinutes,
     draft.slotStepMinutes,
     draft.windowStart,
@@ -899,15 +1780,12 @@ function BookingPageEditor({
   }, [mutationPending, onPendingChange]);
 
   useEffect(() => {
-    if (webhookClearConfirming) {
-      webhookClearConfirmRef.current?.focus();
-      return;
-    }
-    if (restoreWebhookClearFocusRef.current) {
-      restoreWebhookClearFocusRef.current = false;
-      webhookClearTriggerRef.current?.focus();
-    }
+    if (webhookClearConfirming) webhookClearConfirmRef.current?.focus();
   }, [webhookClearConfirming]);
+
+  useEffect(() => {
+    if (archiveConfirming) archiveHeadingRef.current?.focus();
+  }, [archiveConfirming]);
 
   const update = <Key extends keyof PageDraft>(
     key: Key,
@@ -965,13 +1843,40 @@ function BookingPageEditor({
     setValidationErrors([]);
     // Patch only controls changed in this draft. This avoids overwriting an
     // unrelated setting if another admin tab saved while this one was open.
+    const memberBody: Record<string, unknown> = {};
+    if (draft.memberName !== baseline.memberName) {
+      memberBody.name = draft.memberName.trim();
+    }
+    if (draft.memberEmail !== baseline.memberEmail) {
+      memberBody.email = draft.memberEmail.trim().toLowerCase();
+    }
     const body: Record<string, unknown> = {};
-    if (draft.headline !== baseline.headline) {
+    if (
+      draft.headline !== baseline.headline ||
+      (draft.memberName !== baseline.memberName &&
+        page.headline === page.memberName &&
+        !draft.headline.trim())
+    ) {
       const headline = draft.headline.trim();
       body.headline =
-        !headline || headline === page.memberName ? null : headline;
+        !headline || headline === draft.memberName.trim() ? null : headline;
     }
     if (draft.blurb !== baseline.blurb) body.blurb = draft.blurb.trim() || null;
+    if (draft.timezone !== baseline.timezone) {
+      body.timezone = draft.timezone.trim() || null;
+    }
+    if (
+      draft.moveFromTimezone !== baseline.moveFromTimezone ||
+      draft.moveDate !== baseline.moveDate
+    ) {
+      body.timezoneUntil =
+        draft.moveFromTimezone.trim() && draft.moveDate.trim()
+          ? {
+              timezone: draft.moveFromTimezone.trim(),
+              beforeDate: draft.moveDate.trim(),
+            }
+          : null;
+    }
     if (draft.durationMinutes !== baseline.durationMinutes) {
       body.durationMinutes = integerPatch(draft.durationMinutes);
     }
@@ -1007,19 +1912,47 @@ function BookingPageEditor({
     }
 
     try {
-      const response = await mutate(body);
-      if (!response) return;
-      if (!response.ok) {
-        throw new Error(
-          await responseMessage(response, "Could not save this booking page."),
+      if (Object.keys(memberBody).length > 0) {
+        const memberResponse = await fetch(
+          `/api/meet/admin/members/${encodeURIComponent(page.memberKey)}`,
+          {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(memberBody),
+          },
         );
+        if (memberResponse.status === 401) {
+          onUnauthorized();
+          return;
+        }
+        if (!memberResponse.ok) {
+          throw new Error(
+            await responseMessage(
+              memberResponse,
+              "Could not save this member’s identity.",
+            ),
+          );
+        }
+        onRosterChange();
+      }
+      if (Object.keys(body).length > 0) {
+        const response = await mutate(body);
+        if (!response) return;
+        if (!response.ok) {
+          throw new Error(
+            await responseMessage(
+              response,
+              "Could not save these booking rules.",
+            ),
+          );
+        }
       }
       const fresh = await onRefetch(page.memberKey);
       if (!fresh) return;
       installFreshPage(fresh);
       setNotice({
         tone: "success",
-        text: "Page settings saved and refreshed.",
+        text: "Member details and booking rules saved.",
       });
     } catch (error) {
       setNotice({
@@ -1043,6 +1976,8 @@ function BookingPageEditor({
       const response = await mutate({
         headline: null,
         blurb: null,
+        timezone: null,
+        timezoneUntil: null,
         durationMinutes: null,
         slotStepMinutes: null,
         windowStart: null,
@@ -1114,23 +2049,50 @@ function BookingPageEditor({
     }
   };
 
+  const archive = async () => {
+    if (mutationPending || dirty) return;
+    setArchiving(true);
+    setArchiveError(null);
+    try {
+      await onArchive(page);
+    } catch (error) {
+      setArchiveError(
+        error instanceof Error
+          ? error.message
+          : `Could not remove ${page.memberName}.`,
+      );
+    } finally {
+      setArchiving(false);
+    }
+  };
+
   const discard = () => {
     setDraft(baseline);
     setValidationErrors([]);
     setNotice(null);
     setResetConfirming(false);
     setWebhookClearConfirming(false);
+    setArchiveConfirming(false);
+    setArchiveError(null);
   };
 
   const cancelWebhookClear = () => {
-    restoreWebhookClearFocusRef.current = true;
     setWebhookClearConfirming(false);
+    window.requestAnimationFrame(() => webhookClearTriggerRef.current?.focus());
   };
 
+  const closeArchiveConfirmation = () => {
+    setArchiveConfirming(false);
+    setArchiveError(null);
+    window.requestAnimationFrame(() => archiveTriggerRef.current?.focus());
+  };
+
+  const inheritsWeekdays = draft.bookableWeekdays === null;
   const activeWeekdays = draft.bookableWeekdays ?? defaults.bookableWeekdays;
   const weekdayPattern = [1, 2, 3, 4, 5];
   const dailyPattern = [1, 2, 3, 4, 5, 6, 7];
   const patternMatches = (pattern: number[]) =>
+    !inheritsWeekdays &&
     pattern.length === activeWeekdays.length &&
     pattern.every((weekday) => activeWeekdays.includes(weekday));
   const toggleWeekday = (weekday: number) => {
@@ -1148,7 +2110,7 @@ function BookingPageEditor({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h3 className="font-serif-display text-2xl tracking-tight text-ink">
-                {page.memberName}
+                {draft.memberName.trim() || page.memberName}
               </h3>
               <span
                 className={`inline-flex items-center gap-1.5 text-[11px] font-medium ${page.enabled ? "text-status-ok" : "text-ink-faint"}`}
@@ -1157,7 +2119,7 @@ function BookingPageEditor({
                   className={`h-1.5 w-1.5 rounded-full ${page.enabled ? "bg-status-ok" : "bg-ink-faint"}`}
                   aria-hidden
                 />
-                {page.enabled ? "Live" : "Paused"}
+                Personal page {page.enabled ? "live" : "paused"}
               </span>
               {!page.calendarReady && (
                 <span className="text-[11px] font-medium text-status-warn">
@@ -1166,6 +2128,10 @@ function BookingPageEditor({
               )}
             </div>
             <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-ink-mute">
+              <span className="inline-flex items-center gap-1.5">
+                <Mail className="h-3 w-3" aria-hidden />
+                {draft.memberEmail.trim() || page.memberEmail}
+              </span>
               <span className="font-mono">{urlPath(page.url)}</span>
               <a
                 href={page.url}
@@ -1179,8 +2145,12 @@ function BookingPageEditor({
           </div>
           <div className="flex items-center justify-between gap-3 border-l border-hairline pl-4 sm:justify-start">
             <div>
-              <p className="text-xs font-medium text-ink">Accept bookings</p>
-              <p className="text-[11px] text-ink-faint">Changes immediately</p>
+              <p className="text-xs font-medium text-ink">
+                Personal booking page
+              </p>
+              <p className="text-[11px] text-ink-faint">
+                Team scheduling stays active
+              </p>
             </div>
             <LiveSwitch
               enabled={page.enabled}
@@ -1197,15 +2167,33 @@ function BookingPageEditor({
         )}
       </div>
 
+      <div className="grid border-b border-hairline bg-paper px-4 sm:grid-cols-3 sm:px-7">
+        <RuleSummary
+          label="Local time"
+          value={formatLocalTime(preview.timezoneToday)}
+          detail={preview.timezoneToday.replaceAll("_", " ")}
+        />
+        <RuleSummary
+          label="Working pattern"
+          value={`${preview.windowStart}–${preview.windowEnd}`}
+          detail={`${weekdaySummary(preview.bookableWeekdays)} · ${inheritsWeekdays ? "inherited" : "member rule"}`}
+        />
+        <RuleSummary
+          label="Booking rule"
+          value={`${preview.durationMinutes} min · every ${preview.slotStepMinutes}`}
+          detail={`${preview.minNoticeMinutes} min notice · ${preview.horizonDays} day horizon`}
+        />
+      </div>
+
       <div className="grid items-start gap-0 xl:grid-cols-[minmax(0,1fr)_21rem]">
         <form
           onSubmit={(event) => void save(event)}
-          className="min-w-0 p-4 sm:p-7 lg:p-8"
+          className="min-w-0 p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:p-7 lg:p-8"
         >
           <fieldset
             disabled={interactionPending}
             aria-busy={interactionPending}
-            className="m-0 min-w-0 border-0 p-0 disabled:cursor-wait"
+            className="m-0 min-w-0 border-0 p-0"
           >
             <div className="mb-1 flex flex-wrap items-center justify-between gap-3 border-y border-hairline py-3">
               <div className="flex items-center gap-2">
@@ -1246,9 +2234,9 @@ function BookingPageEditor({
                       Clear every custom setting for {page.memberName}?
                     </p>
                     <p className="mt-1 text-xs leading-5 text-ink-mute">
-                      This clears page copy, availability overrides, invite
-                      copy, and the personal Slack destination. The live status
-                      will not change.
+                      This clears page copy, timezone and availability
+                      overrides, invite copy, and the personal Slack
+                      destination. The live status will not change.
                     </p>
                     <div className="mt-3 flex gap-2">
                       <button
@@ -1286,13 +2274,89 @@ function BookingPageEditor({
               </div>
             )}
 
+            <nav
+              aria-label="Member editor sections"
+              className="sticky top-[6.75rem] z-10 -mx-1 mb-2 flex gap-1 overflow-x-auto border-y border-hairline bg-paper/95 px-1 py-2 backdrop-blur xl:hidden"
+            >
+              {[
+                ["Basics", `basics-${page.memberKey}`],
+                ["Availability", `availability-${page.memberKey}`],
+                ["Notifications", `notifications-${page.memberKey}`],
+                ["Preview", `preview-${page.memberKey}`],
+              ].map(([label, id]) => (
+                <button
+                  key={id}
+                  type="button"
+                  className={`${FOCUS_RING} shrink-0 rounded-md px-3 py-2 text-xs font-medium text-ink-mute hover:bg-paper-raise hover:text-ink`}
+                  onClick={() =>
+                    document
+                      .getElementById(id)
+                      ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                  }
+                >
+                  {label}
+                </button>
+              ))}
+            </nav>
+
             <div>
               <EditorSection
+                id={`basics-${page.memberKey}`}
                 icon={<Sparkles />}
                 title="Basics"
-                description="The first thing a visitor sees on this host’s page."
+                description="Member identity and the first thing visitors see on their page."
               >
                 <div className="grid gap-4">
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <label
+                      className="block"
+                      htmlFor={`member-name-${page.memberKey}`}
+                    >
+                      <FieldHeader
+                        label="Member name"
+                        custom={draft.memberName !== baseline.memberName}
+                        detail="Required"
+                      />
+                      <input
+                        id={`member-name-${page.memberKey}`}
+                        className={FIELD}
+                        value={draft.memberName}
+                        required
+                        maxLength={80}
+                        autoComplete="name"
+                        onChange={(event) =>
+                          update("memberName", event.target.value)
+                        }
+                      />
+                    </label>
+                    <label
+                      className="block"
+                      htmlFor={`member-email-${page.memberKey}`}
+                    >
+                      <FieldHeader
+                        label="Notification email"
+                        custom={draft.memberEmail !== baseline.memberEmail}
+                        detail="Required"
+                      />
+                      <input
+                        id={`member-email-${page.memberKey}`}
+                        type="email"
+                        className={FIELD}
+                        value={draft.memberEmail}
+                        required
+                        maxLength={254}
+                        autoComplete="email"
+                        onChange={(event) =>
+                          update("memberEmail", event.target.value)
+                        }
+                      />
+                    </label>
+                  </div>
+                  <p className="border-l border-hairline pl-3 text-[11px] leading-5 text-ink-faint">
+                    Booking URL{" "}
+                    <span className="font-mono">{urlPath(page.url)}</span> stays
+                    fixed so old links and history remain reliable.
+                  </p>
                   <label
                     className="block"
                     htmlFor={`headline-${page.memberKey}`}
@@ -1311,7 +2375,7 @@ function BookingPageEditor({
                         className="min-w-0 flex-1 border-0 bg-paper px-3 py-2.5 text-sm text-ink placeholder:text-ink-faint focus:outline-none disabled:cursor-wait disabled:opacity-60"
                         value={draft.headline}
                         maxLength={80}
-                        placeholder={page.memberName}
+                        placeholder={draft.memberName.trim() || page.memberName}
                         onChange={(event) =>
                           update("headline", event.target.value)
                         }
@@ -1319,7 +2383,7 @@ function BookingPageEditor({
                     </span>
                     <p className="mt-1.5 text-xs text-ink-faint">
                       Customize only the words after the fixed prefix. Leave it
-                      empty to use {page.memberName}.
+                      empty to use {draft.memberName.trim() || page.memberName}.
                     </p>
                   </label>
                   <label className="block" htmlFor={`blurb-${page.memberKey}`}>
@@ -1341,10 +2405,106 @@ function BookingPageEditor({
               </EditorSection>
 
               <EditorSection
+                id={`availability-${page.memberKey}`}
                 icon={<CalendarDays />}
                 title="Availability"
-                description={`Bookable times use ${hostTimezone.replaceAll("_", " ")}.`}
+                description={`Working hours currently use ${preview.timezoneToday.replaceAll("_", " ")}.`}
               >
+                <div className="mb-8 border-l-2 border-hairline-strong pl-4 sm:pl-5">
+                  <div className="flex items-start gap-3">
+                    <span className="mt-0.5 text-ink-mute">
+                      <Globe2 className="h-4 w-4" strokeWidth={1.6} />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-ink">
+                        Host timezone
+                      </p>
+                      <p className="mt-0.5 text-xs leading-5 text-ink-faint">
+                        Define this host’s working hours in their local
+                        timezone, independently of the visitor’s display
+                        timezone.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-4">
+                    <InheritedField
+                      id={`timezone-${page.memberKey}`}
+                      label="Permanent timezone"
+                      value={draft.timezone}
+                      placeholder={defaults.timezone}
+                      defaultText={defaults.timezone.replaceAll("_", " ")}
+                      onChange={(value) => update("timezone", value)}
+                      list={TIMEZONE_LIST_ID}
+                    />
+                  </div>
+
+                  <div className="mt-4 border-t border-hairline pt-4">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-medium text-ink-soft">
+                          Scheduled timezone change
+                        </p>
+                        <p className="mt-0.5 text-[11px] leading-5 text-ink-faint">
+                          Optional. Keep the current zone until a move date,
+                          then switch to the permanent zone above.
+                        </p>
+                      </div>
+                      <span
+                        className={`text-[10px] font-medium uppercase tracking-[0.08em] ${draft.moveDate || draft.moveFromTimezone ? "text-accent" : "text-ink-faint"}`}
+                      >
+                        {draft.moveDate || draft.moveFromTimezone
+                          ? "Custom"
+                          : "Inherited"}
+                      </span>
+                    </div>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <label
+                        className="block"
+                        htmlFor={`move-zone-${page.memberKey}`}
+                      >
+                        <span className="mb-1.5 block text-xs font-medium text-ink-mute">
+                          Current timezone
+                        </span>
+                        <input
+                          id={`move-zone-${page.memberKey}`}
+                          className={FIELD}
+                          value={draft.moveFromTimezone}
+                          placeholder="Asia/Baku"
+                          list={TIMEZONE_LIST_ID}
+                          onChange={(event) =>
+                            update("moveFromTimezone", event.target.value)
+                          }
+                        />
+                      </label>
+                      <label
+                        className="block"
+                        htmlFor={`move-date-${page.memberKey}`}
+                      >
+                        <span className="mb-1.5 block text-xs font-medium text-ink-mute">
+                          Switch on
+                        </span>
+                        <input
+                          id={`move-date-${page.memberKey}`}
+                          type="date"
+                          className={FIELD}
+                          value={draft.moveDate}
+                          onChange={(event) =>
+                            update("moveDate", event.target.value)
+                          }
+                        />
+                      </label>
+                    </div>
+                    <p className="mt-3 border-l border-hairline pl-3 text-[11px] leading-5 text-ink-mute">
+                      {draft.moveFromTimezone.trim() && draft.moveDate.trim()
+                        ? `${draft.moveFromTimezone.trim().replaceAll("_", " ")} remains active through the day before ${draft.moveDate.trim()}; ${preview.timezone.replaceAll("_", " ")} takes over on that date.`
+                        : defaults.timezoneUntil
+                          ? `Inheriting the team move: ${defaults.timezoneUntil.timezone.replaceAll("_", " ")} until ${defaults.timezoneUntil.beforeDate}, then ${preview.timezone.replaceAll("_", " ")}.`
+                          : `No move scheduled. Hours use ${preview.timezone.replaceAll("_", " ")}.`}
+                    </p>
+                  </div>
+                </div>
+
                 <div>
                   <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                     <div>
@@ -1358,8 +2518,9 @@ function BookingPageEditor({
                         }
                       />
                       <p className="max-w-xl text-xs leading-5 text-ink-faint">
-                        Controls this host’s personal booking page. Choose a
-                        preset or set individual days.
+                        Inherited days follow the team-wide booking pattern.
+                        Choosing a preset or day creates one member rule used
+                        for this personal page and team scheduling.
                       </p>
                     </div>
                     <div
@@ -1440,13 +2601,16 @@ function BookingPageEditor({
                   <p
                     className={`mt-3 text-xs leading-5 ${activeWeekdays.includes(6) || activeWeekdays.includes(7) ? "text-status-ok" : "text-ink-mute"}`}
                   >
+                    {inheritsWeekdays
+                      ? "Inherited pattern — "
+                      : "Member rule — "}
                     {activeWeekdays.includes(6) && activeWeekdays.includes(7)
-                      ? "Weekend booking is open on Saturday and Sunday."
+                      ? "weekend booking is open on Saturday and Sunday."
                       : activeWeekdays.includes(6)
-                        ? "Weekend booking is open on Saturday."
+                        ? "weekend booking is open on Saturday."
                         : activeWeekdays.includes(7)
-                          ? "Weekend booking is open on Sunday."
-                          : "Weekend booking is currently closed."}
+                          ? "weekend booking is open on Sunday."
+                          : "weekend booking is closed."}
                     {dirty ? " Save changes to publish this pattern." : ""}
                   </p>
                 </div>
@@ -1478,7 +2642,7 @@ function BookingPageEditor({
                     value={draft.windowStart}
                     placeholder={defaults.windowStart}
                     defaultText={defaults.windowStart}
-                    formatHint="HH:MM · 24:00 is supported"
+                    type="time"
                     onChange={(value) => update("windowStart", value)}
                   />
                   <InheritedField
@@ -1487,7 +2651,7 @@ function BookingPageEditor({
                     value={draft.windowEnd}
                     placeholder={defaults.windowEnd}
                     defaultText={defaults.windowEnd}
-                    formatHint="HH:MM · 24:00 is supported"
+                    type="time"
                     onChange={(value) => update("windowEnd", value)}
                   />
                   <InheritedField
@@ -1514,6 +2678,7 @@ function BookingPageEditor({
               </EditorSection>
 
               <EditorSection
+                id={`notifications-${page.memberKey}`}
                 icon={<Send />}
                 title="Invitation & notifications"
                 description="Control calendar copy and where new bookings are announced."
@@ -1620,12 +2785,6 @@ function BookingPageEditor({
                       <div
                         className="mt-3 rounded-lg border border-status-warn/30 bg-status-warn/[0.05] p-3"
                         role="alert"
-                        onKeyDown={(event) => {
-                          if (event.key === "Escape" && !clearingWebhook) {
-                            event.preventDefault();
-                            cancelWebhookClear();
-                          }
-                        }}
                       >
                         <p className="text-xs font-medium text-ink">
                           Remove this saved Slack credential?
@@ -1679,6 +2838,102 @@ function BookingPageEditor({
               </EditorSection>
             </div>
 
+            <section className="mt-3 border-t border-hairline pt-7">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div className="max-w-xl">
+                  <h4 className="text-sm font-semibold text-ink">
+                    Remove member
+                  </h4>
+                  <p className="mt-1 text-xs leading-5 text-ink-mute">
+                    Stops new team and personal bookings for {page.memberName}.
+                    Booking history, rules and calendar connections stay
+                    recoverable.
+                  </p>
+                  {dirty && (
+                    <p className="mt-1.5 text-xs text-status-warn">
+                      Save or discard the changes above before removing this
+                      member.
+                    </p>
+                  )}
+                </div>
+                <button
+                  ref={archiveTriggerRef}
+                  type="button"
+                  disabled={mutationPending || dirty}
+                  onClick={() => {
+                    setArchiveError(null);
+                    setArchiveConfirming(true);
+                  }}
+                  className={`${FOCUS_RING} inline-flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-lg border border-status-warn/35 px-3 text-sm font-medium text-status-warn transition hover:bg-status-warn/[0.06] disabled:cursor-not-allowed disabled:opacity-45`}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Remove member…
+                </button>
+              </div>
+
+              {archiveConfirming && (
+                <div
+                  className="mt-4 border-l-2 border-status-warn bg-status-warn/[0.045] px-4 py-4"
+                  role="region"
+                  aria-labelledby={`archive-title-${page.memberKey}`}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape" && !archiving) {
+                      closeArchiveConfirmation();
+                    }
+                  }}
+                >
+                  <h5
+                    ref={archiveHeadingRef}
+                    tabIndex={-1}
+                    id={`archive-title-${page.memberKey}`}
+                    className="text-sm font-semibold text-ink focus:outline-none"
+                  >
+                    Remove {page.memberName} from new bookings?
+                  </h5>
+                  <ul className="mt-2 space-y-1 text-xs leading-5 text-ink-mute">
+                    <li>• Their personal page is taken offline.</li>
+                    <li>• They stop counting toward team availability.</li>
+                    <li>• Existing history and saved setup are retained.</li>
+                  </ul>
+                  <p className="mt-2 text-xs leading-5 text-ink-mute">
+                    Removal is blocked if they still have a future meeting or if
+                    it would break the team quorum.
+                  </p>
+                  {archiveError && (
+                    <p
+                      className="mt-3 text-xs font-medium text-status-warn"
+                      role="alert"
+                    >
+                      {archiveError}
+                    </p>
+                  )}
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      disabled={archiving}
+                      onClick={() => void archive()}
+                      className={`${PRIMARY_BUTTON} !bg-status-warn !px-3 !py-2`}
+                    >
+                      {archiving ? (
+                        <LoaderCircle className="h-4 w-4 motion-safe:animate-spin" />
+                      ) : (
+                        <Trash2 className="h-4 w-4" />
+                      )}
+                      {archiving ? "Removing…" : "Remove member"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={archiving}
+                      onClick={closeArchiveConfirmation}
+                      className={SECONDARY_BUTTON}
+                    >
+                      Keep member
+                    </button>
+                  </div>
+                </div>
+              )}
+            </section>
+
             {(notice || validationErrors.length > 0) && (
               <div
                 ref={validationRef}
@@ -1711,7 +2966,9 @@ function BookingPageEditor({
               </div>
             )}
 
-            <div className="sticky bottom-3 z-10 mt-6 flex flex-col gap-3 rounded-xl border border-hairline bg-paper-raise/95 p-3 shadow-[0_8px_30px_hsl(var(--ink)_/_0.10)] backdrop-blur sm:flex-row sm:items-center sm:justify-between">
+            <div
+              className={`z-10 mt-6 flex flex-col gap-3 rounded-lg border border-hairline bg-paper-raise/95 p-3 backdrop-blur sm:flex-row sm:items-center sm:justify-between ${dirty || mutationPending ? "sticky bottom-[calc(0.75rem+env(safe-area-inset-bottom))] shadow-[0_12px_35px_hsl(var(--ink)_/_0.10)]" : ""}`}
+            >
               <div className="flex items-center gap-2 text-xs">
                 <span
                   className={`h-2 w-2 rounded-full ${dirty ? "bg-status-warn" : "bg-status-ok"}`}
@@ -1748,12 +3005,11 @@ function BookingPageEditor({
           </fieldset>
         </form>
 
-        <div className="border-t border-hairline bg-paper p-4 sm:p-6 xl:sticky xl:top-32 xl:border-l xl:border-t-0">
-          <BookingPagePreview
-            page={page}
-            preview={preview}
-            hostTimezone={hostTimezone}
-          />
+        <div
+          id={`preview-${page.memberKey}`}
+          className="scroll-mt-32 border-t border-hairline bg-paper p-4 sm:p-6 xl:sticky xl:top-32 xl:border-l xl:border-t-0"
+        >
+          <BookingPagePreview page={page} preview={preview} />
         </div>
       </div>
     </div>
@@ -1761,18 +3017,23 @@ function BookingPageEditor({
 }
 
 function EditorSection({
+  id,
   icon,
   title,
   description,
   children,
 }: {
+  id?: string;
   icon: ReactNode;
   title: string;
   description: string;
   children: ReactNode;
 }) {
   return (
-    <section className="border-t border-hairline py-7 first:border-t-0 sm:py-8">
+    <section
+      id={id}
+      className="scroll-mt-32 border-t border-hairline py-7 first:border-t-0 sm:py-8"
+    >
       <div className="flex items-start gap-3 pb-5">
         <span className="mt-0.5 text-ink-faint [&>svg]:h-4 [&>svg]:w-4 [&>svg]:stroke-[1.6]">
           {icon}
@@ -1788,6 +3049,26 @@ function EditorSection({
       </div>
       <div className="pt-4">{children}</div>
     </section>
+  );
+}
+
+function RuleSummary({
+  label,
+  value,
+  detail,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+}) {
+  return (
+    <div className="border-b border-hairline py-4 last:border-b-0 sm:border-b-0 sm:border-r sm:px-5 sm:first:pl-0 sm:last:border-r-0">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-ink-faint">
+        {label}
+      </p>
+      <p className="mt-1.5 text-sm font-semibold text-ink">{value}</p>
+      <p className="mt-0.5 text-[11px] text-ink-mute sm:truncate">{detail}</p>
+    </div>
   );
 }
 
@@ -1820,8 +3101,9 @@ function InheritedField({
   defaultText,
   onChange,
   suffix,
+  type = "text",
   inputMode,
-  formatHint,
+  list,
 }: {
   id: string;
   label: string;
@@ -1830,8 +3112,9 @@ function InheritedField({
   defaultText: string;
   onChange: (value: string) => void;
   suffix?: string;
+  type?: "text" | "time";
   inputMode?: "numeric";
-  formatHint?: string;
+  list?: string;
 }) {
   const custom = Boolean(value.trim());
   return (
@@ -1840,8 +3123,9 @@ function InheritedField({
       <span className="relative block">
         <input
           id={id}
-          type="text"
+          type={type}
           inputMode={inputMode}
+          list={list}
           value={value}
           placeholder={placeholder}
           onChange={(event) => onChange(event.target.value)}
@@ -1857,7 +3141,6 @@ function InheritedField({
         {custom
           ? "Overrides the inherited default"
           : `Inheriting ${defaultText}`}
-        {formatHint ? ` · ${formatHint}` : ""}
       </span>
     </label>
   );
@@ -1866,11 +3149,9 @@ function InheritedField({
 function BookingPagePreview({
   page,
   preview,
-  hostTimezone,
 }: {
   page: PersonalPage;
   preview: DraftPreview;
-  hostTimezone: string;
 }) {
   const firstBookableIndex = WEEKDAYS.findIndex((day) =>
     preview.bookableWeekdays.includes(day.value),
@@ -1967,9 +3248,16 @@ function BookingPagePreview({
           </div>
           <p className="mt-3 flex items-center justify-center gap-1 text-[9px] text-ink-faint">
             <Globe2 className="h-2.5 w-2.5" />{" "}
-            {hostTimezone.replaceAll("_", " ")} · up to {preview.horizonDays}{" "}
-            days ahead
+            {preview.timezoneToday.replaceAll("_", " ")} · up to{" "}
+            {preview.horizonDays} days ahead
           </p>
+          {preview.timezoneUntil && (
+            <p className="mt-2 rounded-lg border border-hairline bg-paper px-2.5 py-2 text-[9px] leading-4 text-ink-mute">
+              {preview.timezoneToday === preview.timezoneUntil.timezone
+                ? `${preview.timezoneUntil.timezone.replaceAll("_", " ")} until ${preview.timezoneUntil.beforeDate}; ${preview.timezone.replaceAll("_", " ")} from that date.`
+                : `${preview.timezone.replaceAll("_", " ")} since ${preview.timezoneUntil.beforeDate}.`}
+            </p>
+          )}
         </div>
       </div>
 

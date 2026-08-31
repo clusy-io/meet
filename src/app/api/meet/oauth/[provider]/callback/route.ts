@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/meet/admin";
-import { getMeetConfig } from "@/lib/meet/config";
+import { invalidateAvailabilityCache } from "@/lib/meet/availability";
 import { encryptSecret, verifySigned } from "@/lib/meet/crypto";
+import { getEffectiveMeetConfig } from "@/lib/meet/members";
 import { getProvider } from "@/lib/meet/providers";
 import { getMeetStore } from "@/lib/meet/store";
 import type { CalendarProviderId, SelectedCalendar } from "@/lib/meet/types";
@@ -32,7 +33,7 @@ function decodeState(payload: string): { memberKey: string; issuedAtMs: number }
 type RouteContext = { params: Promise<{ provider: string }> };
 
 export async function GET(request: Request, { params }: RouteContext) {
-  const config = getMeetConfig();
+  const config = await getEffectiveMeetConfig();
   const adminRedirect = (query: string) =>
     NextResponse.redirect(new URL(`/admin?${query}`, config.siteOrigin));
 
@@ -82,6 +83,10 @@ export async function GET(request: Request, { params }: RouteContext) {
     }
 
     const store = getMeetStore();
+    const latestConfig = await getEffectiveMeetConfig();
+    if (!latestConfig.members.some((member) => member.key === state.memberKey)) {
+      return adminRedirect("error=connect_failed");
+    }
     const existing = (await store.listAccounts()).find(
       (account) =>
         account.memberKey === state.memberKey &&
@@ -102,6 +107,7 @@ export async function GET(request: Request, { params }: RouteContext) {
       selectedCalendars,
       status: "ok",
     });
+    invalidateAvailabilityCache();
     return adminRedirect(`connected=${encodeURIComponent(tokens.email)}`);
   } catch (error) {
     console.error("meet: oauth callback failed", error);

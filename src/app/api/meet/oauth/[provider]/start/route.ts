@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/meet/admin";
-import { getMeetConfig } from "@/lib/meet/config";
 import { sign } from "@/lib/meet/crypto";
+import { getEffectiveMeetConfig } from "@/lib/meet/members";
 import { getProvider } from "@/lib/meet/providers";
 import type { CalendarProviderId } from "@/lib/meet/types";
 
@@ -22,7 +22,7 @@ type StartErrorCode =
   | "config_missing";
 
 export async function GET(request: Request, { params }: RouteContext) {
-  const config = getMeetConfig();
+  const config = await getEffectiveMeetConfig();
   // The admin panel links a browser navigation straight at this route, so
   // every failure redirects back to /admin with an error code instead
   // of dead-ending the tab on raw JSON.

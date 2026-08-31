@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { MeetConfig } from "@/lib/meet/config";
-import { availableSlots, candidateSlots, type SlotCandidate } from "@/lib/meet/slots";
+import {
+  availableSlots,
+  candidateSlots,
+  slotOnGrid,
+  type SlotCandidate,
+} from "@/lib/meet/slots";
 import type { BusyInterval } from "@/lib/meet/types";
 import { formatCivilDate, utcToWall, wallToUtcMs } from "@/lib/meet/tz";
 
@@ -152,5 +157,26 @@ describe("availableSlots", () => {
     // Only Ava is connected; the two absent members do not help reach quorum.
     const busy = new Map<string, BusyInterval[]>([["ava", []]]);
     expect(availableSlots(config, [slot], busy, dayBefore)).toHaveLength(0);
+  });
+});
+
+describe("timezone handover", () => {
+  const handover: MeetConfig = {
+    ...config,
+    hostTimezone: "Europe/London",
+    timezoneUntil: { beforeDate: "2026-08-31", timezone: LA },
+  };
+
+  it("uses the old zone before the date and the new zone from that date", () => {
+    const [before] = candidateSlots(handover, { year: 2026, month: 8, day: 27 }, 1);
+    const [after] = candidateSlots(handover, { year: 2026, month: 8, day: 31 }, 1);
+    expect(new Date(before.startMs).toISOString()).toBe("2026-08-27T15:30:00.000Z");
+    expect(new Date(after.startMs).toISOString()).toBe("2026-08-31T07:30:00.000Z");
+  });
+
+  it("validates grids on both sides without accepting the old grid afterwards", () => {
+    expect(slotOnGrid(handover, Date.parse("2026-08-28T04:30:00.000Z"))).toBe(true);
+    expect(slotOnGrid(handover, Date.parse("2026-08-31T07:30:00.000Z"))).toBe(true);
+    expect(slotOnGrid(handover, Date.parse("2026-09-01T04:30:00.000Z"))).toBe(false);
   });
 });

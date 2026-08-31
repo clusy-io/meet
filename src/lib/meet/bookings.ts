@@ -2,13 +2,22 @@ import "server-only";
 import { getMeetConfig, type MeetConfig } from "./config";
 import { decryptSecret, randomToken } from "./crypto";
 import { invalidateAvailabilityCache, slotFreeMembers } from "./availability";
-import { sendBookingCancelled, sendBookingConfirmed, sendBookingRescheduled } from "./emails";
-import { getPage } from "./pages";
+import {
+  sendBookingCancelled,
+  sendBookingConfirmed,
+  sendBookingRescheduled,
+} from "./emails";
+import {
+  getEffectiveMeetConfig,
+  getHistoricalMeetConfig,
+  getRuntimeMeetConfig,
+} from "./members";
+import { getHistoricalPage, getPage, teamMemberWindows } from "./pages";
 import { getProvider } from "./providers";
 import { notifyBookingSlack } from "./slackNotify";
-import { candidateSlots } from "./slots";
-import { getMeetStore } from "./store";
-import { addCivilDays, utcToWall, wallToUtcMs } from "./tz";
+import { slotOnGrid } from "./slots";
+import { getMeetStore, type MeetStore } from "./store";
+import { addCivilDays, isValidTimezone, utcToWall, wallToUtcMs } from "./tz";
 import type {
   Booking,
   BookingEventRef,
@@ -44,15 +53,6 @@ function unavailable(message: string): BookingActionError {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function isValidTimezone(timezone: string): boolean {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: timezone });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Steps 1-2 of booking validation: the instant parses, sits exactly on the
  * host-tz slot grid, respects min notice, and falls inside the horizon
@@ -61,17 +61,17 @@ function isValidTimezone(timezone: string): boolean {
 function validateSlotStart(
   config: MeetConfig,
   start: string,
-  timezone: string
+  timezone: string,
+  grids: Iterable<MeetConfig> = [config],
 ): { ok: true; startMs: number } | BookingActionError {
   const startMs = Date.parse(start);
-  if (Number.isNaN(startMs)) return invalid("The start time is not a valid instant.");
-  if (startMs % 60_000 !== 0) return invalid("The start time must fall on a whole minute.");
+  if (Number.isNaN(startMs))
+    return invalid("The start time is not a valid instant.");
+  if (startMs % 60_000 !== 0)
+    return invalid("The start time must fall on a whole minute.");
   if (!isValidTimezone(timezone)) return invalid("Unknown timezone.");
 
-  const w = utcToWall(config.hostTimezone, startMs);
-  const onGrid = candidateSlots(config, { year: w.year, month: w.month, day: w.day }, 1).some(
-    (c) => c.startMs === startMs
-  );
+  const onGrid = [...grids].some((grid) => slotOnGrid(grid, startMs));
   if (!onGrid) return unavailable("That time is outside the bookable window.");
 
   const nowMs = Date.now();
@@ -79,9 +79,22 @@ function validateSlotStart(
     return unavailable("That time is too soon to book.");
   }
   const nowWall = utcToWall(config.hostTimezone, nowMs);
-  const edge = addCivilDays(nowWall.year, nowWall.month, nowWall.day, config.horizonDays + 1);
-  const horizonMs = wallToUtcMs(config.hostTimezone, edge.year, edge.month, edge.day, 0, 0);
-  if (startMs >= horizonMs) return unavailable("That time is beyond the booking horizon.");
+  const edge = addCivilDays(
+    nowWall.year,
+    nowWall.month,
+    nowWall.day,
+    config.horizonDays + 1,
+  );
+  const horizonMs = wallToUtcMs(
+    config.hostTimezone,
+    edge.year,
+    edge.month,
+    edge.day,
+    0,
+    0,
+  );
+  if (startMs >= horizonMs)
+    return unavailable("That time is beyond the booking horizon.");
 
   return { ok: true, startMs };
 }
@@ -91,15 +104,42 @@ function membersInConfigOrder(config: MeetConfig, keys: string[]): Member[] {
   return config.members.filter((m) => keys.includes(m.key));
 }
 
-function accountRefreshToken(config: MeetConfig, account: CalendarAccount): string {
+/**
+ * Team bookings invite and notify the full active roster, not only the quorum
+ * recorded on the booking. Compare the complete identity snapshot so
+ * a concurrent add/archive/restore/rename/email edit cannot make side effects
+ * from the stale pre-insert config target the wrong people. Key lookup makes
+ * order irrelevant; email identity is case-insensitive.
+ */
+function sameMemberRoster(starting: Member[], latest: Member[]): boolean {
+  if (starting.length !== latest.length) return false;
+  const byKey = new Map(latest.map((member) => [member.key, member]));
+  return starting.every((member) => {
+    const current = byKey.get(member.key);
+    return (
+      current !== undefined &&
+      current.name === member.name &&
+      current.email.trim().toLowerCase() === member.email.trim().toLowerCase()
+    );
+  });
+}
+
+function accountRefreshToken(
+  config: MeetConfig,
+  account: CalendarAccount,
+): string {
   // Mock accounts store a raw "mock:<memberKey>" token, never ciphertext.
-  return config.mockMode ? account.refreshTokenEnc : decryptSecret(account.refreshTokenEnc);
+  return config.mockMode
+    ? account.refreshTokenEnc
+    : decryptSecret(account.refreshTokenEnc);
 }
 
 /** Company domain from the configured site origin; empty when unparsable. */
 function companyDomain(config: MeetConfig): string {
   try {
-    return new URL(config.siteOrigin).hostname.replace(/^www\./, "").toLowerCase();
+    return new URL(config.siteOrigin).hostname
+      .replace(/^www\./, "")
+      .toLowerCase();
   } catch {
     return "";
   }
@@ -122,11 +162,13 @@ interface OrganizerCandidate {
 function organizerCandidates(
   config: MeetConfig,
   attending: Member[],
-  accounts: CalendarAccount[]
+  accounts: CalendarAccount[],
 ): OrganizerCandidate[] {
   const domain = companyDomain(config);
   const isCompanyMs = (a: CalendarAccount): boolean =>
-    a.provider === "microsoft" && domain !== "" && a.email.toLowerCase().endsWith(`@${domain}`);
+    a.provider === "microsoft" &&
+    domain !== "" &&
+    a.email.toLowerCase().endsWith(`@${domain}`);
   const passes: Array<(a: CalendarAccount) => boolean> = [
     isCompanyMs,
     (a) => a.provider === "google",
@@ -169,7 +211,7 @@ function eventAttendees(
   config: MeetConfig,
   booking: Booking,
   organizerEmail: string,
-  invitees: Member[] = config.members
+  invitees: Member[] = config.members,
 ): Array<{ email: string; name?: string }> {
   const seen = new Set<string>([organizerEmail.trim().toLowerCase()]);
   const out: Array<{ email: string; name?: string }> = [];
@@ -188,7 +230,10 @@ function eventAttendees(
 }
 
 /** Sanitized guest list: trimmed, lowercased, valid, deduped, capped at 10. */
-function sanitizeGuests(raw: string[] | undefined, bookerEmail: string): string[] {
+function sanitizeGuests(
+  raw: string[] | undefined,
+  bookerEmail: string,
+): string[] {
   if (!raw) return [];
   const seen = new Set<string>([bookerEmail.trim().toLowerCase()]);
   const out: string[] = [];
@@ -203,42 +248,57 @@ function sanitizeGuests(raw: string[] | undefined, bookerEmail: string): string[
 }
 
 /** Provider-visible copy. Never include the bearer management token here. */
-export function bookingEventDescription(config: MeetConfig, booking: Booking): string {
+export function bookingEventDescription(
+  config: MeetConfig,
+  booking: Booking,
+): string {
   const parts = [config.eventDescription];
   if (booking.notes) parts.push(`Notes from ${booking.name}: ${booking.notes}`);
   return parts.join("\n\n");
 }
 
 export async function createBooking(
-  req: CreateBookingRequest
+  req: CreateBookingRequest,
 ): Promise<{ ok: true; booking: Booking } | BookingActionError> {
-  const config = getMeetConfig();
+  const config = await getRuntimeMeetConfig();
   const store = getMeetStore();
 
   // Defensive re-validation: the route validates too, but this module must
   // hold on its own (it is also the admin/test entry point).
   const name = req.name?.trim() ?? "";
   const email = req.email?.trim() ?? "";
-  if (name.length < 1 || name.length > 120) return invalid("A name is required.");
-  if (!EMAIL_RE.test(email)) return invalid("A valid email address is required.");
+  if (name.length < 1 || name.length > 120)
+    return invalid("A name is required.");
+  if (!EMAIL_RE.test(email))
+    return invalid("A valid email address is required.");
 
   // A personal page books exactly one person against their own calendar. An
   // unresolvable slug must NOT fall through to the team flow: that would
   // silently book the whole team from a typo'd URL.
   const page = req.host ? await getPage(req.host) : null;
   if (req.host && !page) return invalid("Unknown host.");
-  if (page && !page.enabled) return invalid("That booking page is not available.");
+  if (page && !page.enabled)
+    return invalid("That booking page is not available.");
 
   // The page's own window, duration and grid. validateSlotStart must see the
   // SAME config the page offered slots from, or it rejects the very slots the
   // visitor just picked.
   const effective = page ? page.config : config;
 
-  const validated = validateSlotStart(effective, req.start, req.timezone);
+  const windows = page ? null : await teamMemberWindows(config);
+  const validated = validateSlotStart(
+    effective,
+    req.start,
+    req.timezone,
+    windows?.values() ?? [effective],
+  );
   if (!validated.ok) return validated;
   const { startMs } = validated;
 
-  const { free, quorumMet } = await slotFreeMembers(startMs, effective.durationMinutes);
+  const { free, quorumMet } = await slotFreeMembers(
+    startMs,
+    effective.durationMinutes,
+  );
   if (page) {
     // Quorum neither implies nor is implied by "this host is free": 2 of 3 can
     // be free with the host among the busy ones.
@@ -248,11 +308,20 @@ export async function createBooking(
   } else if (!quorumMet) {
     return unavailable("That time is no longer available.");
   }
+  const eligibleFree = page
+    ? free
+    : free.filter((member) => {
+        const window = windows?.get(member.key);
+        return window !== undefined && slotOnGrid(window, startMs);
+      });
+  if (!page && eligibleFree.length < config.quorum) {
+    return unavailable("That time is no longer available.");
+  }
   const attending = page
     ? [page.member]
     : membersInConfigOrder(
         config,
-        free.map((m) => m.key)
+        eligibleFree.map((m) => m.key),
       );
 
   const nowIso = new Date().toISOString();
@@ -284,7 +353,51 @@ export async function createBooking(
 
   const inserted = await store.insertBooking(booking);
   if (!inserted.ok) {
-    return { ok: false, code: "slot_taken", message: "That time was just booked. Pick another slot." };
+    return {
+      ok: false,
+      code: "slot_taken",
+      message: "That time was just booked. Pick another slot.",
+    };
+  }
+
+  // Close the roster race after the database has arbitrated the slot but
+  // before any calendar invite, email or Slack notice leaves the process.
+  // DELETE's future-booking guard prevents changes that start after this
+  // insert; this fresh read catches changes that committed just before it.
+  // Team bookings compare everyone because they notify/invite everyone;
+  // personal pages only depend on their owner.
+  let latest: MeetConfig;
+  try {
+    latest = await getEffectiveMeetConfig();
+  } catch (error) {
+    const unwound = await store.transitionToCancelled(
+      booking.id,
+      new Date().toISOString(),
+    );
+    if (!unwound) {
+      throw new Error(
+        "meet: could not unwind booking after the roster refresh failed",
+      );
+    }
+    throw error;
+  }
+  const rosterStable = page
+    ? sameMemberRoster(
+        [page.member],
+        latest.members.filter((member) => member.key === page.member.key),
+      )
+    : sameMemberRoster(config.members, latest.members);
+  if (!rosterStable) {
+    const cancelledAt = new Date().toISOString();
+    const unwound = await store.transitionToCancelled(booking.id, cancelledAt);
+    if (!unwound) {
+      throw new Error(
+        "meet: could not unwind booking after a concurrent roster change",
+      );
+    }
+    return unavailable(
+      "The host team changed while you were booking. Refresh and choose the time again.",
+    );
   }
   invalidateAvailabilityCache();
 
@@ -306,7 +419,8 @@ export async function createBooking(
         // Events go on the organizer's PRIMARY calendar, never on
         // selectedCalendars: those are busy SOURCES and may be read-only
         // subscriptions (a real production failure: "writer access required").
-        const calendarId = organizer.account.provider === "google" ? "primary" : "";
+        const calendarId =
+          organizer.account.provider === "google" ? "primary" : "";
         const created = await provider.createEvent(refreshToken, {
           calendarId,
           summary: effective.eventTitle.split("{name}").join(booking.name),
@@ -319,7 +433,7 @@ export async function createBooking(
             config,
             booking,
             organizer.account.email,
-            page ? attending : config.members
+            page ? attending : config.members,
           ),
           withConference: organizer.withConference,
         });
@@ -341,15 +455,19 @@ export async function createBooking(
           // retain the ref as an accepted, degraded no-video event rather than
           // create an untracked orphan and a second invitation.
           try {
-            await provider.deleteEvent(refreshToken, calendarId, created.eventId);
+            await provider.deleteEvent(
+              refreshToken,
+              calendarId,
+              created.eventId,
+            );
             console.error(
-              `meet: ${organizer.account.provider} created no conference URL; trying next organizer`
+              `meet: ${organizer.account.provider} created no conference URL; trying next organizer`,
             );
             continue;
           } catch (cleanupError) {
             console.error(
               `meet: could not remove no-video event ${created.eventId}; accepting degraded event`,
-              cleanupError
+              cleanupError,
             );
           }
         }
@@ -361,7 +479,7 @@ export async function createBooking(
       } catch (err) {
         console.error(
           `meet: calendar event creation failed for account ${organizer.account.id}`,
-          err
+          err,
         );
       }
     }
@@ -387,7 +505,7 @@ export async function createBooking(
     }
     if (!refsPersisted) {
       console.error(
-        `meet: ORPHANED calendar event for booking ${booking.id}: ${JSON.stringify(eventRefs)}`
+        `meet: ORPHANED calendar event for booking ${booking.id}: ${JSON.stringify(eventRefs)}`,
       );
     }
   }
@@ -397,6 +515,7 @@ export async function createBooking(
       // When every provider attempt failed there is no native calendar invite
       // to notify extra guests, so Resend must carry a token-free fallback.
       notifyGuestsDirectly: eventRefs.length === 0,
+      config: effective,
     });
   } catch (err) {
     console.error("meet: confirmation email failed", err);
@@ -408,7 +527,11 @@ export async function createBooking(
   await notifyBookingSlack(booking, "confirmed");
 
   const allOk = eventOk && emailOk && refsPersisted;
-  booking.syncStatus = allOk ? "synced" : eventOk || emailOk ? "partial" : "failed";
+  booking.syncStatus = allOk
+    ? "synced"
+    : eventOk || emailOk
+      ? "partial"
+      : "failed";
   if (booking.syncStatus !== "partial") {
     // "partial" is already what the row says since insert; only divergent
     // final states need a write. A failed write leaves an honest "partial".
@@ -423,14 +546,121 @@ export async function createBooking(
   return { ok: true, booking };
 }
 
+/**
+ * Cancellation mail must reflect the roster at delivery time. Team bookings
+ * use the fresh active roster without a quorum assertion, while a personal
+ * booking keeps resolving its (possibly archived) historical page owner.
+ */
+async function cancellationDeliveryConfig(
+  booking: Booking,
+): Promise<MeetConfig> {
+  if (!booking.pageKey) return getEffectiveMeetConfig();
+  return (
+    (await getHistoricalPage(booking.pageKey))?.config ??
+    getHistoricalMeetConfig()
+  );
+}
+
+/**
+ * External work shared by a normal cancellation and the fail-safe
+ * cancellation used when a reschedule cannot roll back to its old slot.
+ * Callers invoke this only after winning transitionToCancelled, which keeps
+ * event deletion and lifecycle notices exactly once across racing requests.
+ */
+async function deliverCancellationSideEffects(
+  booking: Booking,
+  store: MeetStore,
+): Promise<void> {
+  let partial = false;
+  let deliveryConfig: MeetConfig | null = null;
+  try {
+    deliveryConfig = await cancellationDeliveryConfig(booking);
+  } catch (err) {
+    // Do not use a stale or historical team roster as a recipient fallback.
+    // Calendar cleanup and Slack can still proceed independently; leaving the
+    // row partial makes the skipped email visible for reconciliation.
+    console.error("meet: cancellation delivery config failed", err);
+    partial = true;
+  }
+
+  // Token decryption only needs immutable environment configuration. This
+  // fallback lets a roster/database outage stop mail without also orphaning a
+  // tracked provider event.
+  let credentialConfig = deliveryConfig;
+  if (!credentialConfig && booking.eventRefs.length > 0) {
+    try {
+      credentialConfig = getMeetConfig();
+    } catch (err) {
+      console.error("meet: cancellation credential config failed", err);
+      partial = true;
+    }
+  }
+
+  for (const ref of booking.eventRefs) {
+    try {
+      if (!credentialConfig)
+        throw new Error("meeting configuration is unavailable");
+      const account = await store.getAccount(ref.accountId);
+      if (!account)
+        throw new Error(`account ${ref.accountId} no longer exists`);
+      const refreshToken = accountRefreshToken(credentialConfig, account);
+      await getProvider(ref.provider).deleteEvent(
+        refreshToken,
+        ref.calendarId,
+        ref.eventId,
+      );
+    } catch (err) {
+      console.error("meet: calendar event delete failed", err);
+      partial = true;
+    }
+  }
+
+  // notifyBookingSlack is best-effort and never throws. Keep it outside the
+  // sync-state roll-up, matching every other booking lifecycle path.
+  await notifyBookingSlack(booking, "cancelled");
+
+  if (deliveryConfig) {
+    const attending = membersInConfigOrder(
+      deliveryConfig,
+      booking.attendeeMemberKeys,
+    );
+    try {
+      await sendBookingCancelled(booking, attending, deliveryConfig);
+    } catch (err) {
+      console.error("meet: cancellation email failed", err);
+      partial = true;
+    }
+  }
+
+  if (partial) {
+    booking.syncStatus = "partial";
+    try {
+      await store.updateBooking(booking.id, { syncStatus: "partial" });
+    } catch (err) {
+      console.error("meet: cancellation sync-state update failed", err);
+    }
+  }
+}
+
+async function finishWonCancellation(
+  booking: Booking,
+  store: MeetStore,
+  cancelledAt: string,
+): Promise<void> {
+  booking.status = "cancelled";
+  booking.cancelledAt = cancelledAt;
+  invalidateAvailabilityCache();
+  await deliverCancellationSideEffects(booking, store);
+}
+
 export async function cancelBooking(
-  token: string
+  token: string,
 ): Promise<{ ok: true; booking: Booking } | BookingActionError> {
-  const config = getMeetConfig();
   const store = getMeetStore();
 
   const booking = await store.getBookingByToken(token);
-  if (!booking) return { ok: false, code: "not_found", message: "Booking not found." };
+  if (!booking)
+    return { ok: false, code: "not_found", message: "Booking not found." };
   // Idempotent: cancelling twice is a success, not an error.
   if (booking.status === "cancelled") return { ok: true, booking };
 
@@ -441,75 +671,51 @@ export async function cancelBooking(
   const won = await store.transitionToCancelled(booking.id, cancelledAt);
   if (!won) {
     const fresh = await store.getBookingByToken(token);
-    if (!fresh) return { ok: false, code: "not_found", message: "Booking not found." };
+    if (!fresh)
+      return { ok: false, code: "not_found", message: "Booking not found." };
     return { ok: true, booking: fresh };
   }
-  booking.status = "cancelled";
-  booking.cancelledAt = cancelledAt;
-  invalidateAvailabilityCache();
-
-  let deleteFailed = false;
-  for (const ref of booking.eventRefs) {
-    try {
-      const account = await store.getAccount(ref.accountId);
-      if (!account) throw new Error(`account ${ref.accountId} no longer exists`);
-      const refreshToken = accountRefreshToken(config, account);
-      await getProvider(ref.provider).deleteEvent(refreshToken, ref.calendarId, ref.eventId);
-    } catch (err) {
-      console.error("meet: calendar event delete failed", err);
-      deleteFailed = true;
-    }
-  }
-  if (deleteFailed) {
-    // The calendar still shows an event for a cancelled booking; flag the
-    // row so admin can reconcile instead of silently forgetting it.
-    booking.syncStatus = "partial";
-    try {
-      await store.updateBooking(booking.id, { syncStatus: "partial" });
-    } catch (err) {
-      console.error("meet: cancel sync-state update failed", err);
-    }
-  }
-
-  const attending = membersInConfigOrder(config, booking.attendeeMemberKeys);
-  // Reached only when transitionToCancelled was won above, so an idempotent
-  // re-cancel of an already-cancelled booking posts nothing.
-  await notifyBookingSlack(booking, "cancelled");
-  try {
-    await sendBookingCancelled(booking, attending);
-  } catch (err) {
-    console.error("meet: cancellation email failed", err);
-    booking.syncStatus = "partial";
-    try {
-      await store.updateBooking(booking.id, { syncStatus: "partial" });
-    } catch (syncErr) {
-      console.error("meet: cancellation email sync-state update failed", syncErr);
-    }
-  }
+  await finishWonCancellation(booking, store, cancelledAt);
 
   return { ok: true, booking };
 }
 
 export async function rescheduleBooking(
   token: string,
-  req: RescheduleRequest
+  req: RescheduleRequest,
 ): Promise<{ ok: true; booking: Booking } | BookingActionError> {
-  const config = getMeetConfig();
   const store = getMeetStore();
 
   const booking = await store.getBookingByToken(token);
-  if (!booking) return { ok: false, code: "not_found", message: "Booking not found." };
+  if (!booking)
+    return { ok: false, code: "not_found", message: "Booking not found." };
   if (booking.status === "cancelled") {
     return invalid("This booking was cancelled and cannot be rescheduled.");
   }
+  if (Date.parse(booking.endAt) <= Date.now()) {
+    return invalid("This booking has ended and cannot be rescheduled.");
+  }
+
+  const config = await getRuntimeMeetConfig();
 
   // The page's own window and duration, exactly as createBooking does. Keying
   // this off the global config made a personal page with its own duration
   // reject the very slots its picker had just offered.
-  const reschedulePage = booking.pageKey ? await getPage(booking.pageKey) : null;
+  const reschedulePage = booking.pageKey
+    ? await getPage(booking.pageKey)
+    : null;
+  if (booking.pageKey && !reschedulePage) {
+    return invalid("That booking page is no longer available.");
+  }
   const effective = reschedulePage ? reschedulePage.config : config;
 
-  const validated = validateSlotStart(effective, req.start, req.timezone);
+  const windows = reschedulePage ? null : await teamMemberWindows(config);
+  const validated = validateSlotStart(
+    effective,
+    req.start,
+    req.timezone,
+    windows?.values() ?? [effective],
+  );
   if (!validated.ok) return validated;
   const { startMs } = validated;
 
@@ -519,7 +725,12 @@ export async function rescheduleBooking(
   // availability constrained to these members, so slots it shows pass this.
   const { free } = await slotFreeMembers(startMs, booking.durationMinutes);
   const freeKeys = new Set(free.map((m) => m.key));
-  const attendeesFree = booking.attendeeMemberKeys.every((key) => freeKeys.has(key));
+  const attendeesFree = booking.attendeeMemberKeys.every((key) => {
+    if (!freeKeys.has(key)) return false;
+    if (reschedulePage) return key === reschedulePage.member.key;
+    const window = windows?.get(key);
+    return window !== undefined && slotOnGrid(window, startMs);
+  });
   if (!attendeesFree) {
     return unavailable("That time does not work for this meeting's attendees.");
   }
@@ -527,10 +738,16 @@ export async function rescheduleBooking(
   const previousStartAt = booking.startAt;
   const previousEndAt = booking.endAt;
   const newStartAt = new Date(startMs).toISOString();
-  const newEndAt = new Date(startMs + booking.durationMinutes * 60_000).toISOString();
+  const newEndAt = new Date(
+    startMs + booking.durationMinutes * 60_000,
+  ).toISOString();
   const newHistory: Booking["history"] = [
     ...booking.history,
-    { startAt: previousStartAt, endAt: previousEndAt, changedAt: new Date().toISOString() },
+    {
+      startAt: previousStartAt,
+      endAt: previousEndAt,
+      changedAt: new Date().toISOString(),
+    },
   ];
 
   const moved = await store.updateBookingTime(
@@ -538,7 +755,7 @@ export async function rescheduleBooking(
     previousStartAt,
     newStartAt,
     newEndAt,
-    newHistory
+    newHistory,
   );
   if (!moved.ok) {
     if (moved.reason === "not_confirmed") {
@@ -549,10 +766,66 @@ export async function rescheduleBooking(
       return {
         ok: false,
         code: "stale",
-        message: "This booking changed in another request. Refresh and choose a time again.",
+        message:
+          "This booking changed in another request. Refresh and choose a time again.",
       };
     }
-    return { ok: false, code: "slot_taken", message: "That time was just booked. Pick another slot." };
+    return {
+      ok: false,
+      code: "slot_taken",
+      message: "That time was just booked. Pick another slot.",
+    };
+  }
+
+  // A roster change can commit after the free-member check but before the
+  // time CAS. Roll the database row back before touching its still-old
+  // calendar event or sending any lifecycle notice. Compare the complete
+  // identity roster on both team and personal reschedules so every downstream
+  // scope is derived from one stable active-member snapshot.
+  const rollbackMove = async () =>
+    store.updateBookingTime(
+      booking.id,
+      newStartAt,
+      previousStartAt,
+      previousEndAt,
+      booking.history,
+      booking.remindersSent,
+    );
+  let latest: MeetConfig;
+  try {
+    latest = await getEffectiveMeetConfig();
+  } catch (error) {
+    const rolledBack = await rollbackMove();
+    if (!rolledBack.ok && rolledBack.reason === "slot_taken") {
+      const cancelledAt = new Date().toISOString();
+      const won = await store.transitionToCancelled(booking.id, cancelledAt);
+      if (won) await finishWonCancellation(booking, store, cancelledAt);
+    }
+    invalidateAvailabilityCache();
+    throw error;
+  }
+  if (!sameMemberRoster(config.members, latest.members)) {
+    const rolledBack = await rollbackMove();
+    invalidateAvailabilityCache();
+    if (!rolledBack.ok) {
+      if (rolledBack.reason === "not_confirmed") {
+        return invalid("This booking was cancelled and cannot be rescheduled.");
+      }
+      if (rolledBack.reason === "stale") {
+        return {
+          ok: false,
+          code: "stale",
+          message:
+            "This booking changed in another request. Refresh and choose a time again.",
+        };
+      }
+      const cancelledAt = new Date().toISOString();
+      const won = await store.transitionToCancelled(booking.id, cancelledAt);
+      if (won) await finishWonCancellation(booking, store, cancelledAt);
+    }
+    return unavailable(
+      "The team changed while the booking was being moved. Refresh and choose another time.",
+    );
   }
   booking.startAt = newStartAt;
   booking.endAt = newEndAt;
@@ -563,14 +836,15 @@ export async function rescheduleBooking(
   for (const ref of booking.eventRefs) {
     try {
       const account = await store.getAccount(ref.accountId);
-      if (!account) throw new Error(`account ${ref.accountId} no longer exists`);
+      if (!account)
+        throw new Error(`account ${ref.accountId} no longer exists`);
       const refreshToken = accountRefreshToken(config, account);
       await getProvider(ref.provider).updateEventTime(
         refreshToken,
         ref.calendarId,
         ref.eventId,
         newStartAt,
-        newEndAt
+        newEndAt,
       );
     } catch (err) {
       console.error("meet: calendar event reschedule failed", err);
@@ -596,7 +870,12 @@ export async function rescheduleBooking(
   // returns earlier and never reaches here.
   await notifyBookingSlack(booking, "rescheduled", previousStartAt);
   try {
-    await sendBookingRescheduled(booking, attending, previousStartAt);
+    await sendBookingRescheduled(
+      booking,
+      attending,
+      previousStartAt,
+      effective,
+    );
   } catch (err) {
     console.error("meet: reschedule email failed", err);
     booking.syncStatus = "partial";
@@ -611,9 +890,12 @@ export async function rescheduleBooking(
 }
 
 /** Public projection of a booking (what /api/meet returns to the browser). */
-export function toBookingView(b: Booking): BookingView {
+export function toBookingView(
+  b: Booking,
+  members: Member[] = getMeetConfig().members,
+): BookingView {
   const host = b.pageKey
-    ? getMeetConfig().members.find((m) => m.key === b.pageKey)
+    ? members?.find((m) => m.key === b.pageKey)
     : undefined;
   return {
     id: b.id,

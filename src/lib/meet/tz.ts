@@ -129,6 +129,14 @@ export function parseCivilDate(
   const month = Number(m[2]);
   const day = Number(m[3]);
   if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  if (
+    probe.getUTCFullYear() !== year ||
+    probe.getUTCMonth() + 1 !== month ||
+    probe.getUTCDate() !== day
+  ) {
+    return null;
+  }
   return { year, month, day };
 }
 
@@ -148,4 +156,14 @@ export function parseClockToMinutes(value: string): number | null {
   const minute = Number(m[2]);
   if (minute > 59 || hour > 24 || (hour === 24 && minute !== 0)) return null;
   return hour * 60 + minute;
+}
+
+/** True when `value` names an IANA timezone supported by this runtime. */
+export function isValidTimezone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
 }

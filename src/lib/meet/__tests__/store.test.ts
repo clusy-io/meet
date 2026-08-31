@@ -107,6 +107,42 @@ describe("MemoryMeetStore bookings", () => {
     expect(moved?.history).toEqual(history);
   });
 
+  it("can restore reminder markers during a compensating time move", async () => {
+    const store = new MemoryMeetStore();
+    const booking = makeBooking({ remindersSent: ["24h"] });
+    await store.insertBooking(booking);
+    const movedStart = "2026-08-21T15:30:00.000Z";
+    await store.updateBookingTime(
+      booking.id,
+      booking.startAt,
+      movedStart,
+      "2026-08-21T16:00:00.000Z",
+      [
+        ...booking.history,
+        {
+          startAt: booking.startAt,
+          endAt: booking.endAt,
+          changedAt: "2026-08-13T00:00:00.000Z",
+        },
+      ]
+    );
+
+    expect(
+      await store.updateBookingTime(
+        booking.id,
+        movedStart,
+        booking.startAt,
+        booking.endAt,
+        booking.history,
+        booking.remindersSent
+      )
+    ).toEqual({ ok: true });
+    const restored = await store.getBookingByToken(booking.manageToken);
+    expect(restored?.startAt).toBe(booking.startAt);
+    expect(restored?.history).toEqual(booking.history);
+    expect(restored?.remindersSent).toEqual(["24h"]);
+  });
+
   it("allows only one reschedule from the same expected start", async () => {
     const store = new MemoryMeetStore();
     const booking = makeBooking();
@@ -192,6 +228,150 @@ describe("MemoryMeetStore accounts", () => {
     const third = await store.upsertAccount(makeAccountInput({ provider: "microsoft" }));
     expect(third.id).not.toBe(first.id);
     expect(await store.listAccounts()).toHaveLength(3);
+  });
+});
+
+describe("MemoryMeetStore member records", () => {
+  it("preserves creation order and enforces key/email uniqueness", async () => {
+    const store = new MemoryMeetStore();
+    expect(
+      await store.insertMemberRecord({
+        key: "one",
+        name: "One",
+        email: "one@example.com",
+        archivedAt: null,
+      })
+    ).toMatchObject({ ok: true });
+    expect(
+      await store.insertMemberRecord({
+        key: "two",
+        name: "Two",
+        email: "two@example.com",
+        archivedAt: null,
+      })
+    ).toMatchObject({ ok: true });
+    await store.upsertMemberRecord({
+      key: "one",
+      name: "One Renamed",
+      email: "one@example.com",
+      archivedAt: "2026-08-31T12:00:00.000Z",
+    });
+    expect((await store.listMemberRecords()).map((member) => member.key)).toEqual([
+      "one",
+      "two",
+    ]);
+    await expect(
+      store.insertMemberRecord({
+        key: "one",
+        name: "Duplicate",
+        email: "duplicate@example.com",
+        archivedAt: null,
+      })
+    ).resolves.toEqual({ ok: false, reason: "key_taken" });
+    await expect(
+      store.insertMemberRecord({
+        key: "three",
+        name: "Three",
+        email: "TWO@example.com",
+        archivedAt: null,
+      })
+    ).resolves.toEqual({ ok: false, reason: "email_taken" });
+  });
+
+  it("keeps identity and archive mutations field-specific and compensates by marker", async () => {
+    const store = new MemoryMeetStore();
+    await store.insertMemberRecord({
+      key: "one",
+      name: "One",
+      email: "one@example.com",
+      archivedAt: null,
+    });
+
+    const ensured = await store.ensureMemberRecord({
+      key: "one",
+      name: "Stale Name",
+      email: "stale@example.com",
+      archivedAt: "2026-08-30T00:00:00.000Z",
+    });
+    expect(ensured).toMatchObject({
+      ok: true,
+      member: { name: "One", email: "one@example.com", archivedAt: null },
+    });
+
+    await store.updateMemberIdentity("one", { name: "One Renamed" });
+    const marker = "2026-08-31T12:00:00.000Z";
+    await store.updateMemberArchivedAt("one", marker);
+    await store.updateMemberIdentity("one", { email: "one-new@example.com" });
+    await expect(store.getMemberRecord("one")).resolves.toMatchObject({
+      name: "One Renamed",
+      email: "one-new@example.com",
+      archivedAt: marker,
+    });
+
+    await expect(
+      store.restoreMemberArchivedAt("one", "2026-08-31T12:00:01.000Z")
+    ).resolves.toBe(false);
+    await expect(store.restoreMemberArchivedAt("one", marker)).resolves.toBe(true);
+    await expect(store.getMemberRecord("one")).resolves.toMatchObject({
+      name: "One Renamed",
+      email: "one-new@example.com",
+      archivedAt: null,
+    });
+  });
+
+  it("finds unbounded future confirmed bookings by page or attendee", async () => {
+    const store = new MemoryMeetStore();
+    const cutoff = Date.parse("2026-08-20T15:00:00.000Z");
+    store.bookings.push(
+      makeBooking({ pageKey: "personal", attendeeMemberKeys: [], endAt: "2027-08-20T16:00:00.000Z" }),
+      makeBooking({ pageKey: "another-personal-page", attendeeMemberKeys: ["attendee"], endAt: "2026-08-20T16:00:00.000Z" }),
+      makeBooking({ pageKey: "cancelled", attendeeMemberKeys: ["cancelled"], endAt: "2026-08-20T16:00:00.000Z", status: "cancelled" }),
+      makeBooking({ pageKey: "ended", attendeeMemberKeys: ["ended"], endAt: "2026-08-20T14:00:00.000Z" })
+    );
+    await expect(store.hasFutureConfirmedBookingForMember("personal", cutoff)).resolves.toBe(true);
+    await expect(store.hasFutureConfirmedBookingForMember("attendee", cutoff)).resolves.toBe(true);
+    await expect(store.hasFutureConfirmedBookingForMember("cancelled", cutoff)).resolves.toBe(false);
+    await expect(store.hasFutureConfirmedBookingForMember("ended", cutoff)).resolves.toBe(false);
+  });
+
+  it("treats every future team booking as naming the full roster, including legacy rows", async () => {
+    const cutoff = Date.parse("2026-08-20T15:00:00.000Z");
+    const assigned = new MemoryMeetStore();
+    assigned.bookings.push(
+      makeBooking({
+        pageKey: "",
+        attendeeMemberKeys: ["assigned-member"],
+        endAt: "2027-08-20T16:00:00.000Z",
+      })
+    );
+    await expect(
+      assigned.hasFutureConfirmedBookingForMember("invited-but-not-assigned", cutoff)
+    ).resolves.toBe(true);
+
+    const legacy = new MemoryMeetStore();
+    legacy.bookings.push(
+      makeBooking({
+        pageKey: "",
+        attendeeMemberKeys: [],
+        endAt: "2027-08-20T16:00:00.000Z",
+      })
+    );
+
+    await expect(
+      legacy.hasFutureConfirmedBookingForMember("member-not-recorded-on-legacy-row", cutoff)
+    ).resolves.toBe(true);
+
+    const personal = new MemoryMeetStore();
+    personal.bookings.push(
+      makeBooking({
+        pageKey: "personal-host",
+        attendeeMemberKeys: [],
+        endAt: "2027-08-20T16:00:00.000Z",
+      })
+    );
+    await expect(
+      personal.hasFutureConfirmedBookingForMember("unrelated-member", cutoff)
+    ).resolves.toBe(false);
   });
 });
 

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { getMeetConfig } from "./config";
+import { getHistoricalMeetConfig } from "./members";
 import { slackWebhookForPage } from "./pages";
 import {
   getMeetingSlackSettings,
@@ -39,7 +39,7 @@ export async function notifyBookingSlack(
     // was switched on is never announced retroactively.
     if (Date.parse(booking.createdAt) < settings.enabledAtMs && type !== "cancelled") return;
 
-    const config = getMeetConfig();
+    const config = await getHistoricalMeetConfig();
     const host = booking.pageKey
       ? config.members.find((m) => m.key === booking.pageKey)
       : undefined;

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createBooking, toBookingView } from "@/lib/meet/bookings";
+import { listEffectiveMembers } from "@/lib/meet/members";
 import { rateLimit } from "@/lib/meet/ratelimit";
 import { hasTrustedMutationOrigin } from "@/lib/meet/requestSecurity";
 
@@ -52,7 +53,10 @@ export async function POST(request: Request) {
   try {
     const result = await createBooking(parsed.data);
     if (result.ok) {
-      return NextResponse.json({ booking: toBookingView(result.booking) }, { status: 201 });
+      return NextResponse.json(
+        { booking: toBookingView(result.booking, await listEffectiveMembers()) },
+        { status: 201 }
+      );
     }
     const status = result.code === "invalid" ? 400 : result.code === "not_found" ? 404 : 409;
     return NextResponse.json({ message: result.message }, { status });

@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
-import { getMeetConfig } from "@/lib/meet/config";
 import { sendBookingReminder } from "@/lib/meet/emails";
-import { dueReminderKinds, REMINDER_KINDS, reminderPhrase } from "@/lib/meet/reminders";
+import { getEffectiveMeetConfig } from "@/lib/meet/members";
+import { getHistoricalPage } from "@/lib/meet/pages";
+import {
+  dueReminderKinds,
+  REMINDER_KINDS,
+  reminderPhrase,
+} from "@/lib/meet/reminders";
 import { notifyBookingSlack } from "@/lib/meet/slackNotify";
 import { getMeetStore } from "@/lib/meet/store";
 
@@ -12,14 +17,16 @@ export const dynamic = "force-dynamic";
  * Reminder dispatch, invoked by Vercel Cron every 15 minutes (vercel.json).
  *
  * Routing contract: the booker is reminded at their own address in their own
- * timezone; the team copy goes to every configured member, with the attending
+ * timezone; the team copy goes to every active member, with the attending
  * ones named in the body (see teamRecipients in emails.ts).
  * Delivery happens before remindersSent is recorded: a provider failure must
  * leave the reminder eligible for the next cron run rather than suppressing it
  * forever. A reschedule clears remindersSent and re-arms both kinds.
  */
 export async function GET(request: Request) {
-  const config = getMeetConfig();
+  // This path must keep working while active membership is below quorum, so
+  // use the effective roster rather than the strict team-booking config.
+  const config = await getEffectiveMeetConfig();
   const cronSecret = config.cronSecret;
   const auth = request.headers.get("authorization");
   const isCron = !!cronSecret && auth === `Bearer ${cronSecret}`;
@@ -33,7 +40,10 @@ export async function GET(request: Request) {
   const nowMs = Date.now();
   // Widest lead among the kinds bounds how far ahead a reminder can be due.
   const maxLeadMs = Math.max(...REMINDER_KINDS.map((k) => k.leadMs));
-  const upcoming = await store.listConfirmedBookingsInRange(nowMs, nowMs + maxLeadMs + 3_600_000);
+  const upcoming = await store.listConfirmedBookingsInRange(
+    nowMs,
+    nowMs + maxLeadMs + 3_600_000,
+  );
 
   let sent = 0;
   const failures: string[] = [];
@@ -41,13 +51,22 @@ export async function GET(request: Request) {
     // The roster the body resolves "Attending" against. Narrowed for a
     // personal booking so its reminder names one person, not the whole team;
     // the recipient list itself is decided inside emails.ts.
-    const host = booking.pageKey
-      ? config.members.find((m) => m.key === booking.pageKey)
-      : undefined;
-    const memberScope = host ? [host] : config.members;
+    const historicalPage = booking.pageKey
+      ? await getHistoricalPage(booking.pageKey)
+      : null;
+    const memberScope = historicalPage
+      ? [historicalPage.member]
+      : config.members;
+    const deliveryConfig = historicalPage?.config ?? config;
     for (const kind of dueReminderKinds(booking, nowMs)) {
       try {
-        await sendBookingReminder(booking, memberScope, kind, reminderPhrase(kind));
+        await sendBookingReminder(
+          booking,
+          memberScope,
+          kind,
+          reminderPhrase(kind),
+          deliveryConfig,
+        );
         const recorded = await store.markReminderSent(booking.id, kind);
         if (!recorded) {
           failures.push(`${booking.id}:${kind}:state_changed`);
@@ -61,7 +80,10 @@ export async function GET(request: Request) {
           await notifyBookingSlack(booking, kind);
         }
       } catch (err) {
-        console.error(`meet: ${kind} reminder failed for booking ${booking.id}`, err);
+        console.error(
+          `meet: ${kind} reminder failed for booking ${booking.id}`,
+          err,
+        );
         failures.push(`${booking.id}:${kind}`);
       }
     }

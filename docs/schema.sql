@@ -1,8 +1,59 @@
 -- clusy/meet — Supabase / Postgres schema.
 -- Additive and rerunnable. CREATE TABLE provisions new installations; the
--- ALTER statements below upgrade installations created before guest support
+-- ALTER statements below upgrade installations created before runtime members, guest support
 -- and reminder delivery were added. Apply via the Supabase SQL editor or psql,
 -- then: NOTIFY pgrst, 'reload schema';
+
+-- Runtime roster overlay. MEET_MEMBERS remains the bootstrap/baseline roster;
+-- rows here add people, override baseline identity, or soft-archive a stable
+-- member key without deleting accounts, settings, or booking history.
+create table if not exists public.meet_members (
+  member_key text primary key,
+  name text not null,
+  email text not null,
+  archived_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  -- Keep persistence compatible with legacy MEET_MEMBERS keys. New runtime
+  -- members are still held to route-safe key rules by the admin API.
+  constraint meet_members_member_key_nonempty check (length(member_key) > 0),
+  check (length(name) between 1 and 120),
+  check (length(email) between 3 and 320)
+);
+
+-- CREATE TABLE IF NOT EXISTS cannot loosen checks installed by an earlier run.
+-- Remove preview-era route/length checks while retaining the nonempty invariant.
+do $$
+declare
+  stale_constraint text;
+begin
+  for stale_constraint in
+    select constraint_row.conname
+    from pg_constraint as constraint_row
+    where constraint_row.conrelid = 'public.meet_members'::regclass
+      and constraint_row.contype = 'c'
+      and constraint_row.conname <> 'meet_members_member_key_nonempty'
+      and pg_get_constraintdef(constraint_row.oid) like '%member_key%'
+  loop
+    execute format(
+      'alter table public.meet_members drop constraint %I',
+      stale_constraint
+    );
+  end loop;
+
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'meet_members_member_key_nonempty'
+      and conrelid = 'public.meet_members'::regclass
+  ) then
+    alter table public.meet_members
+      add constraint meet_members_member_key_nonempty
+      check (length(member_key) > 0);
+  end if;
+end $$;
+
+create unique index if not exists meet_members_email_lower
+  on public.meet_members (lower(email));
 
 create table if not exists public.meet_accounts (
   id uuid primary key default gen_random_uuid(),
@@ -97,6 +148,12 @@ create index if not exists meet_bookings_range
   on public.meet_bookings (start_at)
   where status = 'confirmed';
 
+create index if not exists meet_bookings_page_start
+  on public.meet_bookings (page_key, start_at);
+
+create index if not exists meet_bookings_attendee_keys
+  on public.meet_bookings using gin (attendee_member_keys);
+
 -- Reject overlapping confirmed ranges, not only identical start timestamps.
 -- SCOPED BY page_key: without that scope one person's booking would block that
 -- interval on every other page, which is exactly what per-person pages must
@@ -146,14 +203,17 @@ end $$;
 -- and would differ between instances until then.
 --
 -- A member with no row at all is a live page on fully inherited settings.
--- There is deliberately no FK to a member table (the roster lives in
--- MEET_MEMBERS) and none from meet_bookings.page_key either, so deleting a
--- page never cascades into booking history.
+-- There is deliberately no FK to meet_members: bootstrap MEET_MEMBERS entries
+-- need no overlay row. App code validates against the merged roster, and no
+-- FK from meet_bookings.page_key means archive can never cascade into history.
 create table if not exists public.meet_page_settings (
   member_key text primary key,
   enabled boolean not null default true,
   headline text,
   blurb text,
+  timezone text,
+  timezone_until_date text,
+  timezone_until_zone text,
   window_start_min int check (window_start_min between 0 and 1440),
   window_end_min int check (window_end_min between 0 and 1440),
   bookable_weekdays jsonb,
@@ -173,11 +233,34 @@ create table if not exists public.meet_page_settings (
     window_start_min is null
     or window_end_min is null
     or window_start_min < window_end_min
-  )
+  ),
+  constraint meet_page_settings_timezone_until_pair
+    check ((timezone_until_date is null) = (timezone_until_zone is null))
 );
+
+alter table public.meet_page_settings
+  add column if not exists timezone text,
+  add column if not exists timezone_until_date text,
+  add column if not exists timezone_until_zone text;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'meet_page_settings_timezone_until_pair'
+      and conrelid = 'public.meet_page_settings'::regclass
+  ) then
+    alter table public.meet_page_settings
+      add constraint meet_page_settings_timezone_until_pair
+      check ((timezone_until_date is null) = (timezone_until_zone is null));
+  end if;
+end $$;
 
 -- Service-role access only: RLS on with no policies means anon/authenticated
 -- API keys can read nothing; the meet backend uses the service-role key.
 alter table public.meet_accounts enable row level security;
 alter table public.meet_bookings enable row level security;
 alter table public.meet_page_settings enable row level security;
+alter table public.meet_members enable row level security;
+
+notify pgrst, 'reload schema';

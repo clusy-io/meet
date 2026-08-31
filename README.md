@@ -17,8 +17,9 @@ runs at [clusy.io/meet](https://clusy.io/meet).
 ## What you get
 
 **Team availability** across any mix of Google Calendar and Microsoft Outlook
-accounts, with a configurable quorum and per-account busy calendars. A slot is
-offered when enough people are genuinely free.
+accounts, with a configurable quorum and per-account busy calendars. Each host
+can keep their own IANA timezone, working hours and weekdays; a slot is offered
+only when enough people are both calendar-free and inside their local window.
 
 **A page per person**, alongside the team page. `/<member key>` books that one
 person against their own calendar, with quorum set aside.
@@ -79,9 +80,11 @@ so the times on offer are exactly when they are free.
   <img src="docs/media/personal-page.gif" alt="A personal booking page headed 'Book a call with Founder', showing only that person's free times" width="900">
 </p>
 
-Each member in `MEET_MEMBERS` gets a page at their key: `/ada`, `/sam`, and so
-on. Booking one person does not black out anybody else, because a confirmed
-booking is overlaid onto exactly the people committed to it. Their email goes
+`MEET_MEMBERS` is the bootstrap roster. The authenticated admin API can add,
+rename, restore and soft-archive hosts at runtime; each active member gets a
+page at their key: `/ada`, `/sam`, and so on. Booking one person does not black
+out anybody else, because a confirmed booking is overlaid onto exactly the
+people committed to it. Their email goes
 to that one person rather than the whole team, and only they are put on the
 calendar invite.
 
@@ -93,9 +96,10 @@ no route of its own.
 
 ## Configured from the admin console, not a redeploy
 
-Every personal page is edited at runtime: whether it is live, its hours, meeting
-length, gap between slots, minimum notice, booking horizon, heading, calendar
-event title, and its own Slack webhook.
+Every personal page can be edited at runtime: whether it is live, its timezone
+and scheduled timezone handover, hours and weekdays, meeting length, gap between
+slots, minimum notice, booking horizon, heading, calendar event title, and its
+own Slack webhook. New and restored members start with a paused public page.
 
 <p align="center">
   <img src="docs/media/admin-personal-pages.gif" alt="The admin console opening the Personal pages section, revealing per-person settings including a Slack webhook field" width="900">
@@ -202,7 +206,7 @@ reminders, or the team's copy. Everything else is environment-driven:
 | Group | Variables |
 | --- | --- |
 | Identity | `NEXT_PUBLIC_SITE_URL`, `MEET_BRAND_NAME`, `MEET_EMAIL_FROM` |
-| Team | `MEET_MEMBERS`, `MEET_QUORUM`, `MEET_HOST_TIMEZONE` |
+| Team | `MEET_MEMBERS`, `MEET_QUORUM`, `MEET_HOST_TIMEZONE`, optional `MEET_TIMEZONE_UNTIL` |
 | Window | `MEET_WINDOW_START`, `MEET_WINDOW_END`, `MEET_DURATION_MINUTES`, `MEET_SLOT_STEP_MINUTES`, `MEET_MIN_NOTICE_MINUTES`, `MEET_HORIZON_DAYS` |
 | Security | `MEET_ADMIN_SECRET`, `MEET_TOKEN_SECRET`, `CRON_SECRET` |
 | Storage | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` |
@@ -230,6 +234,7 @@ so the admin console can change them without a deploy.
 | `/api/meet/availability` | Public availability, optionally `?host=<member key>` |
 | `/api/meet/bookings` | Booking lifecycle APIs |
 | `/api/meet/admin/pages` | Personal page settings |
+| `/api/meet/admin/members` | Runtime roster additions, edits, archive and restore |
 | `/api/meet/oauth/*` | Google and Microsoft connection flow |
 | `/api/meet/cron/reminders` | Secret-gated reminder worker |
 

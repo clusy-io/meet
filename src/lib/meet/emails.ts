@@ -278,10 +278,10 @@ async function sendPair(
 export async function sendBookingConfirmed(
   booking: Booking,
   members: Member[],
-  options: { notifyGuestsDirectly?: boolean } = {}
+  options: { notifyGuestsDirectly?: boolean; config?: MeetConfig } = {}
 ): Promise<void> {
   try {
-    const config = getMeetConfig();
+    const config = options.config ?? getMeetConfig();
     const attending = attendingMembers(booking, members);
     const manageUrl = `${config.siteOrigin}/manage/${booking.manageToken}`;
     const whenLocal = formatWhen(booking.startAt, booking.timezone);
@@ -399,9 +399,12 @@ export async function sendBookingConfirmed(
   }
 }
 
-export async function sendBookingCancelled(booking: Booking, members: Member[]): Promise<void> {
+export async function sendBookingCancelled(
+  booking: Booking,
+  members: Member[],
+  config: MeetConfig = getMeetConfig()
+): Promise<void> {
   try {
-    const config = getMeetConfig();
     const attending = attendingMembers(booking, members);
     const whenLocal = formatWhen(booking.startAt, booking.timezone);
     const whenHost = formatWhen(booking.startAt, config.hostTimezone);
@@ -460,10 +463,10 @@ export async function sendBookingCancelled(booking: Booking, members: Member[]):
 export async function sendBookingRescheduled(
   booking: Booking,
   members: Member[],
-  previousStartAt: string
+  previousStartAt: string,
+  config: MeetConfig = getMeetConfig()
 ): Promise<void> {
   try {
-    const config = getMeetConfig();
     const attending = attendingMembers(booking, members);
     const manageUrl = `${config.siteOrigin}/manage/${booking.manageToken}`;
     const whenLocal = formatWhen(booking.startAt, booking.timezone);
@@ -548,10 +551,10 @@ export async function sendBookingReminder(
   booking: Booking,
   members: Member[],
   kind: string,
-  phrase: string
+  phrase: string,
+  config: MeetConfig = getMeetConfig()
 ): Promise<void> {
   try {
-    const config = getMeetConfig();
     const attending = attendingMembers(booking, members);
     const manageUrl = `${config.siteOrigin}/manage/${booking.manageToken}`;
     const whenLocal = formatWhen(booking.startAt, booking.timezone);
