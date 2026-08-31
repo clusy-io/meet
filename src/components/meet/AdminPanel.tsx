@@ -1,25 +1,14 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useState,
-  type FormEvent,
-  type ReactNode,
-} from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import {
   AlertTriangle,
   ArrowUpRight,
   CalendarClock,
-  CalendarDays,
   CheckCircle2,
-  Clock3,
   KeyRound,
-  Link2,
   LoaderCircle,
-  Settings2,
   ShieldCheck,
-  Users,
   X,
 } from "lucide-react";
 import ThemeToggle from "@/components/ThemeToggle";
@@ -46,25 +35,21 @@ const NAV_ITEMS: Array<{
   id: AdminWorkspaceView;
   label: string;
   description: string;
-  icon: typeof CalendarDays;
 }> = [
   {
     id: "schedule",
     label: "Schedule",
     description: "Upcoming calls and history",
-    icon: CalendarDays,
   },
   {
     id: "pages",
     label: "Booking pages",
     description: "Copy, availability and alerts",
-    icon: Settings2,
   },
   {
     id: "calendars",
     label: "Calendars",
     description: "Connections and busy time",
-    icon: Link2,
   },
 ];
 
@@ -205,31 +190,21 @@ export function AdminPanel() {
   ).length;
 
   return (
-    <main className="min-h-screen bg-paper text-ink">
-      <header className="sticky top-0 z-40 border-b border-hairline bg-paper/90 backdrop-blur-xl">
+    <main className="meet-admin-canvas min-h-screen bg-paper text-ink">
+      <header className="sticky top-0 z-40 border-b border-hairline bg-paper/92 backdrop-blur-xl">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <div className="flex h-16 items-center justify-between gap-4">
-            <div className="flex min-w-0 items-center gap-3">
-              <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-ink text-paper shadow-[0_6px_20px_hsl(var(--ink)_/_0.12)]">
-                <CalendarClock className="h-4 w-4" aria-hidden />
-              </div>
-              <div className="min-w-0">
-                <h1 className="flex items-center gap-2">
-                  <span className="font-serif-display text-lg tracking-tight">
-                    Meet
-                  </span>
-                  <span className="rounded-full border border-hairline bg-paper-raise px-2 py-0.5 font-mono text-[9px] uppercase tracking-[0.14em] text-ink-faint">
-                    Admin
-                  </span>
-                </h1>
-                <p className="hidden truncate text-[11px] text-ink-mute sm:block">
-                  Scheduling workspace
-                </p>
-              </div>
+          <div className="flex min-h-16 items-center justify-between gap-4 py-3">
+            <div className="flex min-w-0 items-baseline gap-3">
+              <h1 className="font-serif-display text-[1.7rem] font-bold leading-none tracking-[-0.035em]">
+                Meet
+              </h1>
+              <span className="border-l border-hairline pl-3 text-xs font-medium tracking-wide text-ink-mute">
+                Operations
+              </span>
             </div>
 
-            <div className="flex items-center gap-1 sm:gap-2">
-              <div className="mr-1 hidden items-center gap-2 rounded-full border border-hairline bg-paper-raise px-3 py-1.5 text-xs text-ink-mute md:flex">
+            <div className="flex items-center gap-2 sm:gap-5">
+              <div className="hidden items-center gap-2 text-xs text-ink-mute md:flex">
                 <span
                   className={`h-1.5 w-1.5 rounded-full ${
                     healthyMembers === overview.members.length
@@ -238,7 +213,13 @@ export function AdminPanel() {
                   }`}
                   aria-hidden
                 />
-                {healthyMembers}/{overview.members.length} calendars ready
+                <span>
+                  {healthyMembers}/{overview.members.length} calendars ready
+                  <span className="mx-2 text-hairline-strong">/</span>
+                  {overview.window.start}–{overview.window.end}
+                  <span className="mx-2 text-hairline-strong">/</span>
+                  {overview.hostTimezone.replaceAll("_", " ")}
+                </span>
               </div>
               <a
                 href="/"
@@ -246,43 +227,38 @@ export function AdminPanel() {
                 rel="noreferrer"
                 aria-label="Open team booking page in a new tab"
                 title="Open team booking page"
-                className="inline-flex h-10 w-10 items-center justify-center gap-1.5 rounded-xl text-sm text-ink-mute transition hover:bg-paper-raise hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 sm:w-auto sm:px-3"
+                className="link-draw inline-flex h-10 w-10 items-center justify-center gap-1.5 text-sm text-ink-mute transition hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 sm:h-auto sm:w-auto"
               >
-                <span className="hidden sm:inline">Open booking page</span>
+                <span className="hidden sm:inline">View live page</span>
                 <ArrowUpRight className="h-3.5 w-3.5" aria-hidden />
               </a>
-              <ThemeToggle className="h-10! w-10! rounded-xl! hover:bg-paper-raise!" />
+              <ThemeToggle className="h-10! w-10! rounded-full! hover:bg-paper-raise!" />
             </div>
           </div>
 
           <nav
             aria-label="Meeting admin"
-            className="-mb-px flex gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            className="-mb-px flex gap-7 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           >
             {NAV_ITEMS.map((item) => {
               const selected = item.id === activeView;
-              const Icon = item.icon;
               return (
                 <button
                   key={item.id}
                   type="button"
                   aria-current={selected ? "page" : undefined}
                   onClick={() => selectView(item.id)}
-                  className={`group relative flex min-h-12 shrink-0 items-center gap-2.5 rounded-t-xl px-3.5 text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/50 sm:px-4 ${
-                    selected
-                      ? "text-ink"
-                      : "text-ink-mute hover:bg-paper-raise/60 hover:text-ink-soft"
+                  className={`group relative flex min-h-11 shrink-0 items-center text-sm transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/50 ${
+                    selected ? "text-ink" : "text-ink-mute hover:text-ink-soft"
                   }`}
                 >
-                  <Icon
-                    className={`h-4 w-4 ${selected ? "text-accent" : "text-ink-faint"}`}
-                    aria-hidden
-                  />
-                  <span className="font-medium">{item.label}</span>
+                  <span className={selected ? "font-semibold" : "font-medium"}>
+                    {item.label}
+                  </span>
                   <span className="sr-only">— {item.description}</span>
                   {selected && (
                     <span
-                      className="absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-accent"
+                      className="absolute inset-x-0 bottom-0 h-0.5 bg-accent"
                       aria-hidden
                     />
                   )}
@@ -293,7 +269,7 @@ export function AdminPanel() {
         </div>
       </header>
 
-      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8 lg:px-8 lg:py-10">
+      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 sm:py-10 lg:px-8 lg:py-14">
         {banner && (
           <div
             role="status"
@@ -324,28 +300,6 @@ export function AdminPanel() {
             </button>
           </div>
         )}
-
-        <div className="mb-8 grid gap-3 md:grid-cols-3">
-          <OverviewFact
-            icon={<Clock3 className="h-4 w-4" />}
-            label="Booking hours"
-            value={`${overview.window.start}–${overview.window.end}`}
-            detail={overview.hostTimezone.replaceAll("_", " ")}
-          />
-          <OverviewFact
-            icon={<Users className="h-4 w-4" />}
-            label="Team meeting quorum"
-            value={`${overview.quorum} of ${overview.members.length}`}
-            detail="Monday to Friday"
-          />
-          <OverviewFact
-            icon={<ShieldCheck className="h-4 w-4" />}
-            label="Availability health"
-            value={`${healthyMembers} ready`}
-            detail={`${overview.accounts.length} connected account${overview.accounts.length === 1 ? "" : "s"}`}
-            tone={healthyMembers === overview.members.length ? "ok" : "warn"}
-          />
-        </div>
 
         {/* Keep every workspace mounted so drafts survive switching tabs. */}
         <div hidden={activeView !== "schedule"}>
@@ -386,42 +340,6 @@ export function AdminPanel() {
         </div>
       </div>
     </main>
-  );
-}
-
-function OverviewFact({
-  icon,
-  label,
-  value,
-  detail,
-  tone = "default",
-}: {
-  icon: ReactNode;
-  label: string;
-  value: string;
-  detail: string;
-  tone?: "default" | "ok" | "warn";
-}) {
-  const iconTone =
-    tone === "ok"
-      ? "text-status-ok"
-      : tone === "warn"
-        ? "text-status-warn"
-        : "text-accent";
-  return (
-    <div className="flex items-center gap-3 rounded-2xl border border-hairline bg-paper-raise px-4 py-3.5 shadow-[0_1px_0_hsl(var(--ink)_/_0.025)]">
-      <span
-        className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-paper ${iconTone}`}
-      >
-        {icon}
-      </span>
-      <div className="min-w-0">
-        <p className="text-[11px] font-medium text-ink-mute">{label}</p>
-        <p className="mt-0.5 text-sm font-semibold leading-5 text-ink">
-          {value} <span className="font-normal text-ink-mute">· {detail}</span>
-        </p>
-      </div>
-    </div>
   );
 }
 

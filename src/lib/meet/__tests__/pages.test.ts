@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { MeetConfig } from "@/lib/meet/config";
-import { availableSlots, candidateSlots, type SlotCandidate } from "@/lib/meet/slots";
+import {
+  availableSlots,
+  candidateSlots,
+  type SlotCandidate,
+} from "@/lib/meet/slots";
 import { MemoryMeetStore } from "@/lib/meet/store";
 import { configForPage } from "@/lib/meet/pages";
 import type { Booking, BusyInterval, PageSettings } from "@/lib/meet/types";
+import { utcToWall } from "@/lib/meet/tz";
 
 /**
  * Invariants that make personal pages (/ada) independent of the team page
@@ -40,7 +45,10 @@ const config: MeetConfig = {
 };
 
 const START_MS = Date.parse("2026-08-20T17:00:00.000Z"); // a Thursday, 10:00 LA
-const SLOT: SlotCandidate = { startMs: START_MS, endMs: START_MS + 30 * 60_000 };
+const SLOT: SlotCandidate = {
+  startMs: START_MS,
+  endMs: START_MS + 30 * 60_000,
+};
 
 let seq = 0;
 function makeBooking(overrides: Partial<Booking> = {}): Booking {
@@ -82,7 +90,9 @@ describe("availableSlots quorum override", () => {
     const busy = new Map<string, BusyInterval[]>([
       ["ada", [{ startMs: SLOT.startMs, endMs: SLOT.endMs }]],
     ]);
-    expect(availableSlots(config, [SLOT], busy, START_MS - 1, 1)).toHaveLength(0);
+    expect(availableSlots(config, [SLOT], busy, START_MS - 1, 1)).toHaveLength(
+      0,
+    );
   });
 
   it("fails CLOSED when the host's calendar could not be read", () => {
@@ -90,7 +100,9 @@ describe("availableSlots quorum override", () => {
     // that they are free. Personal pages have no quorum to absorb this, so an
     // empty map must produce zero slots rather than a wide-open day.
     const busy = new Map<string, BusyInterval[]>();
-    expect(availableSlots(config, [SLOT], busy, START_MS - 1, 1)).toHaveLength(0);
+    expect(availableSlots(config, [SLOT], busy, START_MS - 1, 1)).toHaveLength(
+      0,
+    );
   });
 
   it("still applies the config quorum when none is passed", () => {
@@ -102,13 +114,19 @@ describe("availableSlots quorum override", () => {
 describe("per-page slot uniqueness", () => {
   it("lets two different pages hold the same start time", async () => {
     const store = new MemoryMeetStore();
-    expect(await store.insertBooking(makeBooking({ pageKey: "ada" }))).toEqual({ ok: true });
-    expect(await store.insertBooking(makeBooking({ pageKey: "sam" }))).toEqual({ ok: true });
+    expect(await store.insertBooking(makeBooking({ pageKey: "ada" }))).toEqual({
+      ok: true,
+    });
+    expect(await store.insertBooking(makeBooking({ pageKey: "sam" }))).toEqual({
+      ok: true,
+    });
   });
 
   it("still rejects two bookings on the SAME page at one start time", async () => {
     const store = new MemoryMeetStore();
-    expect(await store.insertBooking(makeBooking({ pageKey: "ada" }))).toEqual({ ok: true });
+    expect(await store.insertBooking(makeBooking({ pageKey: "ada" }))).toEqual({
+      ok: true,
+    });
     expect(await store.insertBooking(makeBooking({ pageKey: "ada" }))).toEqual({
       ok: false,
       reason: "slot_taken",
@@ -126,7 +144,10 @@ describe("per-page slot uniqueness", () => {
 
   it("lets a reschedule move onto a start held by a different page", async () => {
     const store = new MemoryMeetStore();
-    const mine = makeBooking({ pageKey: "ada", startAt: "2026-08-20T18:00:00.000Z" });
+    const mine = makeBooking({
+      pageKey: "ada",
+      startAt: "2026-08-20T18:00:00.000Z",
+    });
     await store.insertBooking(mine);
     await store.insertBooking(makeBooking({ pageKey: "sam" }));
     const moved = await store.updateBookingTime(
@@ -134,7 +155,7 @@ describe("per-page slot uniqueness", () => {
       mine.startAt,
       new Date(START_MS).toISOString(),
       new Date(START_MS + 30 * 60_000).toISOString(),
-      []
+      [],
     );
     expect(moved).toEqual({ ok: true });
   });
@@ -151,7 +172,10 @@ describe("page settings persistence", () => {
 
   it("leaves omitted fields alone and clears on an explicit null", async () => {
     const store = new MemoryMeetStore();
-    await store.upsertPageSettings("ada", { headline: "Ju", durationMinutes: 45 });
+    await store.upsertPageSettings("ada", {
+      headline: "Ju",
+      durationMinutes: 45,
+    });
     await store.upsertPageSettings("ada", { enabled: false });
     let row = await store.getPageSettings("ada");
     expect(row?.durationMinutes).toBe(45);
@@ -191,14 +215,24 @@ describe("effective config never offers a grid it would then refuse", () => {
     // Skipping instead of clamping left the 30-minute team grid in place, so a
     // 45-minute page offered overlapping slots and then refused them as
     // off-grid at booking time.
-    const effective = configForPage(config, member, settings({ durationMinutes: 45 }));
+    const effective = configForPage(
+      config,
+      member,
+      settings({ durationMinutes: 45 }),
+    );
     expect(effective.durationMinutes).toBe(45);
     expect(effective.slotStepMinutes).toBeGreaterThanOrEqual(45);
 
-    const candidates = candidateSlots(effective, { year: 2026, month: 8, day: 20 }, 1);
+    const candidates = candidateSlots(
+      effective,
+      { year: 2026, month: 8, day: 20 },
+      1,
+    );
     expect(candidates.length).toBeGreaterThan(1);
     for (let i = 1; i < candidates.length; i++) {
-      expect(candidates[i].startMs).toBeGreaterThanOrEqual(candidates[i - 1].endMs);
+      expect(candidates[i].startMs).toBeGreaterThanOrEqual(
+        candidates[i - 1].endMs,
+      );
     }
   });
 
@@ -206,7 +240,7 @@ describe("effective config never offers a grid it would then refuse", () => {
     const effective = configForPage(
       config,
       member,
-      settings({ durationMinutes: 30, slotStepMinutes: 60 })
+      settings({ durationMinutes: 30, slotStepMinutes: 60 }),
     );
     expect(effective.slotStepMinutes).toBe(60);
   });
@@ -214,5 +248,26 @@ describe("effective config never offers a grid it would then refuse", () => {
   it("forces quorum to 1 so only the page owner gates a slot", () => {
     expect(configForPage(config, member, null).quorum).toBe(1);
     expect(config.quorum).toBe(2);
+  });
+
+  it("offers a personal-page slot on a configured Saturday", () => {
+    const effective = configForPage(
+      config,
+      member,
+      settings({ bookableWeekdays: [1, 2, 3, 4, 5, 6] }),
+    );
+
+    // 2026-08-22 is a Saturday in Los Angeles. This proves the personal-page
+    // override reaches the real candidate grid rather than only changing the
+    // admin preview.
+    const saturday = candidateSlots(
+      effective,
+      { year: 2026, month: 8, day: 22 },
+      1,
+    );
+
+    expect(effective.bookableWeekdays).toContain(6);
+    expect(saturday.length).toBeGreaterThan(0);
+    expect(utcToWall(LA, saturday[0].startMs).weekday).toBe(6);
   });
 });

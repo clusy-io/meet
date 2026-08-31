@@ -291,25 +291,23 @@ export function ScheduleView({
 
   return (
     <section className="mx-auto w-full max-w-7xl" aria-busy={refreshing}>
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+      <div className="flex flex-col gap-5 border-b border-hairline pb-7 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-ink-faint">
-            Meetings workspace
-          </p>
-          <h2 className="font-serif-display mt-1 text-3xl font-bold tracking-tight text-ink sm:text-4xl">
+          <h2 className="font-serif-display text-4xl font-bold tracking-[-0.045em] text-ink sm:text-5xl">
             Schedule
           </h2>
-          <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-ink-mute">
-            <span>{data.hostTimezone.replaceAll("_", " ")}</span>
-            <span aria-hidden>·</span>
-            <span>{freshnessLabel(fetchedAt, nowMs)}</span>
+          <p className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm leading-6 text-ink-mute">
+            Your meeting ledger in {data.hostTimezone.replaceAll("_", " ")}.
+            <span className="text-ink-faint">
+              {freshnessLabel(fetchedAt, nowMs)}
+            </span>
           </p>
         </div>
         <button
           type="button"
           onClick={() => void load(true)}
           disabled={refreshing}
-          className={`inline-flex h-10 items-center justify-center gap-2 self-start rounded-lg border border-hairline bg-paper-raise px-3.5 text-sm font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:opacity-60 sm:self-auto ${FOCUS_RING}`}
+          className={`link-draw inline-flex h-9 items-center justify-center gap-2 self-start text-sm font-medium text-ink-mute transition-colors hover:text-ink disabled:opacity-60 sm:self-auto ${FOCUS_RING}`}
         >
           <RefreshCw
             size={15}
@@ -331,14 +329,14 @@ export function ScheduleView({
         </div>
       )}
 
-      <div className="mt-6 grid gap-3 lg:grid-cols-[minmax(0,1.75fr)_minmax(320px,1fr)]">
+      <div className="mt-8 grid gap-5 lg:grid-cols-[minmax(0,1.8fr)_minmax(18rem,0.72fr)] lg:gap-8">
         <NextUpCard
           booking={view.next}
           members={data.members}
           hostTimezone={data.hostTimezone}
           nowMs={nowMs}
         />
-        <div className="grid grid-cols-3 gap-2 lg:grid-cols-1">
+        <div className="grid grid-cols-3 divide-x divide-hairline border-y border-hairline lg:grid-cols-1 lg:divide-x-0 lg:divide-y">
           <MetricButton
             icon={<CalendarDays size={16} strokeWidth={1.6} />}
             label="Today"
@@ -388,8 +386,8 @@ export function ScheduleView({
         </div>
       </div>
 
-      <div className="mt-6 rounded-2xl border border-hairline bg-paper-raise shadow-[0_18px_60px_-54px_rgba(56,34,15,0.55)]">
-        <div className="border-b border-hairline p-3 sm:p-4">
+      <div className="mt-12 border-t border-hairline-strong">
+        <div className="border-b border-hairline py-4">
           <div
             className="flex gap-1 overflow-x-auto pb-1"
             role="group"
@@ -403,10 +401,10 @@ export function ScheduleView({
                   type="button"
                   aria-pressed={selected}
                   onClick={() => setFilter("timeframe", item.value)}
-                  className={`shrink-0 rounded-lg px-3 py-2 text-sm font-medium transition-colors ${FOCUS_RING} ${
+                  className={`shrink-0 border-b px-3 py-2 text-sm font-medium transition-colors ${FOCUS_RING} ${
                     selected
-                      ? "bg-ink text-paper"
-                      : "text-ink-mute hover:bg-paper hover:text-ink"
+                      ? "border-accent text-ink"
+                      : "border-transparent text-ink-mute hover:text-ink"
                   }`}
                 >
                   {item.label}
@@ -500,7 +498,7 @@ export function ScheduleView({
                     onClick={() => changeDensity(option)}
                     className={`inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-xs capitalize transition-colors ${FOCUS_RING} ${
                       selected
-                        ? "bg-paper-raise font-medium text-ink shadow-sm"
+                        ? "bg-paper-raise font-medium text-ink"
                         : "text-ink-mute hover:text-ink"
                     }`}
                   >
@@ -519,16 +517,16 @@ export function ScheduleView({
             onClear={() => setFilters(DEFAULT_FILTERS)}
           />
         ) : (
-          <div className="p-3 sm:p-4">
-            <div className="space-y-5">
+          <div className="py-6">
+            <div className="space-y-9">
               {view.groups.map((group) => {
                 const headingId = `schedule-day-${group.dateKey}`;
                 return (
                   <section key={group.dateKey} aria-labelledby={headingId}>
-                    <div className="mb-2 flex items-center gap-3">
+                    <div className="mb-3 flex items-center gap-4">
                       <h2
                         id={headingId}
-                        className="shrink-0 text-sm font-semibold tracking-tight text-ink"
+                        className="shrink-0 font-serif-display text-lg font-bold tracking-tight text-ink"
                       >
                         {formatDayHeading(
                           group.bookings[0].startAt,
@@ -542,7 +540,7 @@ export function ScheduleView({
                         {group.bookings.length === 1 ? "" : "s"}
                       </span>
                     </div>
-                    <ul className="divide-y divide-hairline overflow-hidden rounded-xl border border-hairline bg-paper">
+                    <ul className="divide-y divide-hairline border-y border-hairline bg-paper-raise/45">
                       {group.bookings.map((booking) => (
                         <MeetingRow
                           key={booking.id}
@@ -580,20 +578,16 @@ function NextUpCard({
 }) {
   if (!booking) {
     return (
-      <div className="relative flex min-h-48 flex-col justify-between overflow-hidden rounded-2xl border border-hairline bg-paper-raise p-5 sm:p-6">
-        <span
-          aria-hidden
-          className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/60 to-transparent"
-        />
-        <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.12em] text-ink-faint">
+      <div className="relative flex min-h-52 flex-col justify-between overflow-hidden rounded-xl bg-ink p-6 text-paper sm:p-8">
+        <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-paper/55">
           <Clock3 size={14} strokeWidth={1.6} aria-hidden />
           Next up
         </div>
         <div className="mt-8">
-          <p className="font-serif-display text-2xl font-bold tracking-tight text-ink">
+          <p className="font-serif-display text-3xl font-bold tracking-tight text-paper">
             The calendar is clear
           </p>
-          <p className="mt-2 max-w-lg text-sm leading-6 text-ink-mute">
+          <p className="mt-2 max-w-lg text-sm leading-6 text-paper/60">
             There are no confirmed meetings ahead in the loaded booking window.
           </p>
         </div>
@@ -603,21 +597,17 @@ function NextUpCard({
 
   const happening = Date.parse(booking.startAt) <= nowMs;
   return (
-    <article className="relative min-w-0 overflow-hidden rounded-2xl border border-hairline bg-paper-raise p-5 shadow-[0_22px_70px_-58px_rgba(56,34,15,0.7)] sm:p-6">
-      <span
-        aria-hidden
-        className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-accent/70 to-transparent"
-      />
+    <article className="relative min-w-0 overflow-hidden rounded-xl bg-ink p-6 text-paper sm:p-8">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.12em] text-ink-faint">
+        <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-paper/55">
           <Clock3 size={14} strokeWidth={1.6} aria-hidden />
           Next up
         </div>
         <span
           className={`rounded-full px-2.5 py-1 text-xs font-medium ${
             happening
-              ? "bg-status-ok/10 text-status-ok"
-              : "bg-accent/10 text-accent"
+              ? "bg-status-ok/15 text-status-ok"
+              : "bg-paper/10 text-paper/75"
           }`}
         >
           {relativeToStart(booking, nowMs)}
@@ -626,32 +616,38 @@ function NextUpCard({
 
       <div className="mt-5 grid min-w-0 gap-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
         <div className="min-w-0">
-          <p className="text-sm font-medium text-ink-mute">
+          <p className="text-sm font-medium text-paper/60">
             {formatShortDate(booking.startAt, hostTimezone)}
           </p>
-          <p className="mt-1 flex min-w-0 flex-wrap items-baseline gap-x-2 font-serif-display text-[clamp(1.75rem,8vw,2.25rem)] font-bold leading-tight tracking-[-0.035em] text-ink sm:text-4xl">
+          <p className="mt-1 flex min-w-0 flex-wrap items-baseline gap-x-2 font-serif-display text-[clamp(2rem,8vw,3rem)] font-bold leading-tight tracking-[-0.045em] text-paper sm:text-5xl">
             <span>{formatTime(booking.startAt, hostTimezone)}</span>
-            <span className="text-ink-faint" aria-hidden>–</span>
+            <span className="text-paper/35" aria-hidden>
+              –
+            </span>
             <span>{formatTime(booking.endAt, hostTimezone)}</span>
           </p>
-          <h2 className="mt-4 break-words text-lg font-semibold tracking-tight text-ink">
+          <h2 className="mt-5 break-words text-lg font-semibold tracking-tight text-paper">
             {booking.name}
           </h2>
-          <p className="mt-1 break-all text-sm text-ink-mute">
+          <p className="mt-1 break-all text-sm text-paper/55">
             {booking.email}
           </p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <span className={`${CHIP} ${syncTone(booking.syncStatus)}`}>
+            <span
+              className={`${CHIP} border-paper/15 bg-paper/5 text-paper/70`}
+            >
               Calendar {booking.syncStatus}
             </span>
             {booking.guests.length > 0 && (
-              <span className={`${CHIP} text-ink-soft`}>
+              <span
+                className={`${CHIP} border-paper/15 bg-paper/5 text-paper/70`}
+              >
                 {booking.guests.length} guest
                 {booking.guests.length === 1 ? "" : "s"}
               </span>
             )}
           </div>
-          <p className="mt-3 flex items-center gap-1.5 text-xs text-ink-mute">
+          <p className="mt-3 flex items-center gap-1.5 text-xs text-paper/55">
             <UserRound size={13} strokeWidth={1.7} aria-hidden />
             With {hostLabel(booking, members)}
           </p>
@@ -663,7 +659,7 @@ function NextUpCard({
               href={booking.meetingUrl}
               target="_blank"
               rel="noreferrer"
-              className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-ink px-4 text-sm font-medium text-paper transition-opacity hover:opacity-90 ${FOCUS_RING}`}
+              className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-paper px-4 text-sm font-medium text-ink transition-opacity hover:opacity-90 ${FOCUS_RING}`}
             >
               <Video size={15} strokeWidth={1.7} aria-hidden />
               Join call
@@ -674,7 +670,7 @@ function NextUpCard({
             href={booking.manageUrl}
             target="_blank"
             rel="noreferrer"
-            className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-hairline px-4 text-sm font-medium text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink ${FOCUS_RING}`}
+            className={`inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-paper/20 px-4 text-sm font-medium text-paper/70 transition-colors hover:border-paper/45 hover:text-paper ${FOCUS_RING}`}
           >
             Manage
             <ExternalLink size={14} strokeWidth={1.7} aria-hidden />
@@ -708,17 +704,13 @@ function MetricButton({
       type="button"
       aria-pressed={active}
       onClick={onClick}
-      className={`group flex min-w-0 items-center gap-3 rounded-xl border p-3 text-left transition-all hover:-translate-y-px hover:border-hairline-strong sm:p-4 ${FOCUS_RING} ${
-        active
-          ? "border-accent/35 bg-accent/5"
-          : "border-hairline bg-paper-raise"
+      className={`group flex min-w-0 items-center gap-2 px-3 py-4 text-left transition-colors sm:px-5 ${FOCUS_RING} ${
+        active ? "bg-accent/[0.055]" : "hover:bg-paper-raise/70"
       }`}
     >
       <span
-        className={`hidden h-9 w-9 shrink-0 items-center justify-center rounded-lg sm:flex ${
-          tone === "warn"
-            ? "bg-status-warn/10 text-status-warn"
-            : "bg-paper text-ink-mute"
+        className={`hidden shrink-0 items-center justify-center sm:flex ${
+          tone === "warn" ? "text-status-warn" : "text-ink-faint"
         }`}
         aria-hidden
       >
@@ -730,7 +722,7 @@ function MetricButton({
           <span className="hidden sm:inline">{label}</span>
         </span>
         <span
-          className={`mt-0.5 block text-2xl font-semibold leading-none tabular-nums ${
+          className={`mt-1 block font-serif-display text-2xl font-bold leading-none tabular-nums ${
             tone === "warn" ? "text-status-warn" : "text-ink"
           }`}
         >
@@ -807,7 +799,13 @@ function MeetingRow({
       : "px-3 py-4 sm:px-4 sm:py-[1.125rem]";
 
   return (
-    <li className={cancelled ? "bg-paper-raise/40" : "bg-paper-raise"}>
+    <li
+      className={
+        cancelled
+          ? "bg-paper-raise/25"
+          : "transition-colors hover:bg-paper-raise/60"
+      }
+    >
       <article className={`${padding} ${cancelled ? "opacity-70" : ""}`}>
         <div className="grid min-w-0 gap-3 sm:grid-cols-[7.25rem_minmax(0,1fr)_auto] sm:items-center">
           <div className="flex items-baseline justify-between gap-3 sm:block">
@@ -835,7 +833,9 @@ function MeetingRow({
                 {booking.name}
               </h3>
               {inProgress && (
-                <span className={`${CHIP} border-status-ok/25 bg-status-ok/5 text-status-ok`}>
+                <span
+                  className={`${CHIP} border-status-ok/25 bg-status-ok/5 text-status-ok`}
+                >
                   Now
                 </span>
               )}
@@ -1002,9 +1002,7 @@ function MeetingDetails({
               </span>
             ))
           ) : (
-            <span className="text-xs text-ink-mute">
-              No reminders sent yet
-            </span>
+            <span className="text-xs text-ink-mute">No reminders sent yet</span>
           )}
         </div>
         {booking.status === "cancelled" && (
