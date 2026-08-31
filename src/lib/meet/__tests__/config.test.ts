@@ -67,7 +67,6 @@ describe("Meet config validation", () => {
       "MEET_SLOT_STEP_MINUTES",
     ],
     [{ MEET_QUORUM: "0" }, "MEET_QUORUM"],
-    [{ MEET_QUORUM: "4" }, "MEET_QUORUM"],
     [{ MEET_WINDOW_START: "22:00", MEET_WINDOW_END: "08:30" }, "MEET_WINDOW_START"],
     [{ MEET_WINDOW_END: "24:30" }, "MEET_WINDOW_END"],
     [{ MEET_HOST_TIMEZONE: "Mars/Olympus" }, "MEET_HOST_TIMEZONE"],
@@ -77,6 +76,10 @@ describe("Meet config validation", () => {
     [{ MEET_HORIZON_DAYS: "forever" }, "MEET_HORIZON_DAYS"],
   ])("rejects dangerous bounds %#", (env, message) => {
     expect(configured(env)).toThrow(message);
+  });
+
+  it("allows bootstrap quorum above the env roster for later runtime additions", () => {
+    expect(configured({ MEET_QUORUM: "4" })().quorum).toBe(4);
   });
 
   it("rejects duplicate member keys", () => {

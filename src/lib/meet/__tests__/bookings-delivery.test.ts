@@ -36,9 +36,13 @@ const mocks = vi.hoisted(() => {
     listAccounts: vi.fn(),
     getAccount: vi.fn(),
     transitionToCancelled: vi.fn(),
+    listMemberRecords: vi.fn(),
+    listPageSettings: vi.fn(),
+    getPageSettings: vi.fn(),
     sendConfirmed: vi.fn(),
     sendCancelled: vi.fn(),
     sendRescheduled: vi.fn(),
+    notifySlack: vi.fn(),
     getProvider: vi.fn(),
     microsoftCreate: vi.fn(),
     microsoftDelete: vi.fn(),
@@ -58,12 +62,18 @@ vi.mock("@/lib/meet/emails", () => ({
   sendBookingRescheduled: mocks.sendRescheduled,
 }));
 vi.mock("@/lib/meet/providers", () => ({ getProvider: mocks.getProvider }));
+vi.mock("@/lib/meet/slackNotify", () => ({
+  notifyBookingSlack: mocks.notifySlack,
+}));
 vi.mock("@/lib/meet/crypto", () => ({
   decryptSecret: (value: string) => value,
   randomToken: () => "generated-manage-token",
 }));
 vi.mock("@/lib/meet/store", () => ({
   getMeetStore: () => ({
+    listMemberRecords: mocks.listMemberRecords,
+    listPageSettings: mocks.listPageSettings,
+    getPageSettings: mocks.getPageSettings,
     insertBooking: mocks.insertBooking,
     getBookingByToken: mocks.getBookingByToken,
     updateBooking: mocks.updateBooking,
@@ -74,7 +84,11 @@ vi.mock("@/lib/meet/store", () => ({
   }),
 }));
 
-import { createBooking, rescheduleBooking } from "@/lib/meet/bookings";
+import {
+  cancelBooking,
+  createBooking,
+  rescheduleBooking,
+} from "@/lib/meet/bookings";
 
 const START_MS = Date.parse("2026-08-13T10:00:00.000Z");
 
@@ -82,7 +96,7 @@ function account(
   id: string,
   memberKey: string,
   provider: CalendarAccount["provider"],
-  email: string
+  email: string,
 ): CalendarAccount {
   return {
     id,
@@ -125,28 +139,44 @@ function existingBooking(): Booking {
 describe("booking delivery and duration invariants", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-08-12T00:00:00.000Z"));
+    vi.spyOn(Date, "now").mockReturnValue(
+      Date.parse("2026-08-12T00:00:00.000Z"),
+    );
     vi.spyOn(console, "error").mockImplementation(() => undefined);
-    mocks.slotFreeMembers.mockResolvedValue({ free: mocks.config.members, quorumMet: true });
+    mocks.slotFreeMembers.mockResolvedValue({
+      free: mocks.config.members,
+      quorumMet: true,
+    });
+    mocks.listMemberRecords.mockResolvedValue([]);
+    mocks.listPageSettings.mockResolvedValue([]);
+    mocks.getPageSettings.mockResolvedValue(null);
     mocks.insertBooking.mockResolvedValue({ ok: true });
     mocks.updateBooking.mockResolvedValue(undefined);
     mocks.updateBookingTime.mockResolvedValue({ ok: true });
+    mocks.transitionToCancelled.mockResolvedValue(true);
     mocks.listAccounts.mockResolvedValue([]);
     mocks.sendConfirmed.mockResolvedValue(undefined);
+    mocks.sendCancelled.mockResolvedValue(undefined);
     mocks.sendRescheduled.mockResolvedValue(undefined);
+    mocks.notifySlack.mockResolvedValue(undefined);
     mocks.microsoftDelete.mockResolvedValue(undefined);
     mocks.googleDelete.mockResolvedValue(undefined);
     mocks.getProvider.mockImplementation((provider: string) =>
       provider === "microsoft"
-        ? { createEvent: mocks.microsoftCreate, deleteEvent: mocks.microsoftDelete }
-        : { createEvent: mocks.googleCreate, deleteEvent: mocks.googleDelete }
+        ? {
+            createEvent: mocks.microsoftCreate,
+            deleteEvent: mocks.microsoftDelete,
+          }
+        : { createEvent: mocks.googleCreate, deleteEvent: mocks.googleDelete },
     );
   });
 
   afterEach(() => vi.restoreAllMocks());
 
   it("degrades booking sync status when confirmation delivery fails", async () => {
-    mocks.sendConfirmed.mockRejectedValueOnce(new Error("email provider unavailable"));
+    mocks.sendConfirmed.mockRejectedValueOnce(
+      new Error("email provider unavailable"),
+    );
 
     const result = await createBooking({
       start: new Date(START_MS).toISOString(),
@@ -161,6 +191,93 @@ describe("booking delivery and duration invariants", () => {
     expect(mocks.updateBooking).toHaveBeenCalledWith(result.booking.id, {
       syncStatus: "failed",
     });
+  });
+
+  it("unwinds before side effects when the active roster identity changes during insert", async () => {
+    const changedAt = "2026-08-12T00:00:00.000Z";
+    mocks.listMemberRecords.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        key: "one",
+        name: "One Renamed",
+        email: "one-new@example.com",
+        archivedAt: null,
+        createdAt: changedAt,
+        updatedAt: changedAt,
+      },
+    ]);
+
+    const result = await createBooking({
+      start: new Date(START_MS).toISOString(),
+      name: "Booker",
+      email: "booker@example.com",
+      timezone: "UTC",
+    });
+
+    expect(result).toMatchObject({ ok: false, code: "slot_unavailable" });
+    const inserted = mocks.insertBooking.mock.calls[0]?.[0] as Booking;
+    expect(mocks.transitionToCancelled).toHaveBeenCalledWith(
+      inserted.id,
+      expect.any(String),
+    );
+    expect(mocks.listAccounts).not.toHaveBeenCalled();
+    expect(mocks.getProvider).not.toHaveBeenCalled();
+    expect(mocks.sendConfirmed).not.toHaveBeenCalled();
+  });
+
+  it("unwinds before rethrowing a post-insert roster read failure", async () => {
+    mocks.listMemberRecords
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error("roster unavailable"));
+
+    await expect(
+      createBooking({
+        start: new Date(START_MS).toISOString(),
+        name: "Booker",
+        email: "booker@example.com",
+        timezone: "UTC",
+      }),
+    ).rejects.toThrow("roster unavailable");
+
+    expect(mocks.transitionToCancelled).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+    );
+    expect(mocks.listAccounts).not.toHaveBeenCalled();
+    expect(mocks.sendConfirmed).not.toHaveBeenCalled();
+  });
+
+  it("rechecks each free member's local hours before satisfying team quorum", async () => {
+    mocks.listPageSettings.mockResolvedValue([
+      {
+        memberKey: "one",
+        enabled: true,
+        headline: null,
+        blurb: null,
+        timezone: "Asia/Baku",
+        timezoneUntil: null,
+        windowStartMin: 9 * 60,
+        windowEndMin: 13 * 60,
+        bookableWeekdays: null,
+        durationMinutes: null,
+        slotStepMinutes: null,
+        minNoticeMinutes: null,
+        horizonDays: null,
+        eventTitle: null,
+        eventDescription: null,
+        slackWebhookEnc: null,
+        createdAt: "2026-08-01T00:00:00.000Z",
+        updatedAt: "2026-08-01T00:00:00.000Z",
+      },
+    ]);
+
+    const result = await createBooking({
+      start: new Date(START_MS).toISOString(),
+      name: "Booker",
+      email: "booker@example.com",
+      timezone: "UTC",
+    });
+    expect(result).toMatchObject({ ok: false, code: "slot_unavailable" });
+    expect(mocks.insertBooking).not.toHaveBeenCalled();
   });
 
   it("checks reschedule availability for the stored booking duration", async () => {
@@ -179,8 +296,315 @@ describe("booking delivery and duration invariants", () => {
       "2026-08-14T10:00:00.000Z",
       new Date(START_MS).toISOString(),
       new Date(START_MS + 60 * 60_000).toISOString(),
-      expect.any(Array)
+      expect.any(Array),
     );
+  });
+
+  it("rejects rescheduling a booking that has already ended", async () => {
+    const booking = existingBooking();
+    booking.startAt = "2026-08-11T10:00:00.000Z";
+    booking.endAt = "2026-08-11T11:00:00.000Z";
+    mocks.getBookingByToken.mockResolvedValue(booking);
+
+    const result = await rescheduleBooking("manage-token", {
+      start: new Date(START_MS).toISOString(),
+      timezone: "UTC",
+    });
+
+    expect(result).toMatchObject({ ok: false, code: "invalid" });
+    expect(mocks.slotFreeMembers).not.toHaveBeenCalled();
+    expect(mocks.updateBookingTime).not.toHaveBeenCalled();
+  });
+
+  it("rolls a moved booking back before side effects when the active roster changes", async () => {
+    const booking = existingBooking();
+    booking.history = [
+      {
+        startAt: "2026-08-13T09:00:00.000Z",
+        endAt: "2026-08-13T10:00:00.000Z",
+        changedAt: "2026-08-01T00:00:00.000Z",
+      },
+    ];
+    booking.remindersSent = ["24h"];
+    mocks.getBookingByToken.mockResolvedValue(booking);
+    const changedAt = "2026-08-12T00:00:00.000Z";
+    mocks.listMemberRecords.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        key: "one",
+        name: "One Renamed",
+        email: "one-new@example.com",
+        archivedAt: null,
+        createdAt: changedAt,
+        updatedAt: changedAt,
+      },
+    ]);
+    mocks.updateBookingTime
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true });
+
+    const result = await rescheduleBooking("manage-token", {
+      start: new Date(START_MS).toISOString(),
+      timezone: "UTC",
+    });
+
+    expect(result).toMatchObject({ ok: false, code: "slot_unavailable" });
+    expect(mocks.updateBookingTime).toHaveBeenNthCalledWith(
+      2,
+      booking.id,
+      new Date(START_MS).toISOString(),
+      "2026-08-14T10:00:00.000Z",
+      "2026-08-14T11:00:00.000Z",
+      booking.history,
+      ["24h"],
+    );
+    expect(mocks.getAccount).not.toHaveBeenCalled();
+    expect(mocks.sendRescheduled).not.toHaveBeenCalled();
+  });
+
+  it("cancels safely when a roster-race rollback cannot reclaim the old slot", async () => {
+    const booking = existingBooking();
+    booking.eventRefs = [
+      {
+        provider: "google",
+        accountId: "google-account",
+        calendarId: "primary",
+        eventId: "event-1",
+      },
+    ];
+    mocks.getBookingByToken.mockResolvedValue(booking);
+    const changedAt = "2026-08-12T00:00:00.000Z";
+    const changedRoster = [
+      {
+        key: "one",
+        name: "One Renamed",
+        email: "one@example.com",
+        archivedAt: null,
+        createdAt: changedAt,
+        updatedAt: changedAt,
+      },
+    ];
+    mocks.listMemberRecords
+      .mockResolvedValueOnce([])
+      .mockResolvedValue(changedRoster);
+    mocks.updateBookingTime
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: false, reason: "slot_taken" });
+    mocks.getAccount.mockResolvedValue(
+      account("google-account", "one", "google", "one@example.com"),
+    );
+
+    const result = await rescheduleBooking("manage-token", {
+      start: new Date(START_MS).toISOString(),
+      timezone: "UTC",
+    });
+
+    expect(result).toMatchObject({ ok: false, code: "slot_unavailable" });
+    expect(mocks.transitionToCancelled).toHaveBeenCalledWith(
+      booking.id,
+      expect.any(String),
+    );
+    expect(mocks.googleDelete).toHaveBeenCalledOnce();
+    expect(mocks.sendCancelled).toHaveBeenCalledOnce();
+    expect(mocks.notifySlack).toHaveBeenCalledOnce();
+    expect(mocks.sendRescheduled).not.toHaveBeenCalled();
+  });
+
+  it("does not duplicate fallback cancellation delivery when another request wins", async () => {
+    const booking = existingBooking();
+    booking.eventRefs = [
+      {
+        provider: "google",
+        accountId: "google-account",
+        calendarId: "primary",
+        eventId: "event-1",
+      },
+    ];
+    mocks.getBookingByToken.mockResolvedValue(booking);
+    const changedAt = "2026-08-12T00:00:00.000Z";
+    mocks.listMemberRecords.mockResolvedValueOnce([]).mockResolvedValue([
+      {
+        key: "one",
+        name: "One Renamed",
+        email: "one@example.com",
+        archivedAt: null,
+        createdAt: changedAt,
+        updatedAt: changedAt,
+      },
+    ]);
+    mocks.updateBookingTime
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: false, reason: "slot_taken" });
+    mocks.transitionToCancelled.mockResolvedValue(false);
+
+    const result = await rescheduleBooking("manage-token", {
+      start: new Date(START_MS).toISOString(),
+      timezone: "UTC",
+    });
+
+    expect(result).toMatchObject({ ok: false, code: "slot_unavailable" });
+    expect(mocks.googleDelete).not.toHaveBeenCalled();
+    expect(mocks.sendCancelled).not.toHaveBeenCalled();
+    expect(mocks.notifySlack).not.toHaveBeenCalled();
+  });
+
+  it("cleans a tracked event when repeated roster reads fail during fallback cancellation", async () => {
+    const booking = existingBooking();
+    booking.eventRefs = [
+      {
+        provider: "google",
+        accountId: "google-account",
+        calendarId: "primary",
+        eventId: "event-1",
+      },
+    ];
+    mocks.getBookingByToken.mockResolvedValue(booking);
+    mocks.listMemberRecords
+      .mockResolvedValueOnce([])
+      .mockRejectedValue(new Error("roster unavailable"));
+    mocks.updateBookingTime
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: false, reason: "slot_taken" });
+    mocks.getAccount.mockResolvedValue(
+      account("google-account", "one", "google", "one@example.com"),
+    );
+
+    await expect(
+      rescheduleBooking("manage-token", {
+        start: new Date(START_MS).toISOString(),
+        timezone: "UTC",
+      }),
+    ).rejects.toThrow("roster unavailable");
+
+    expect(mocks.transitionToCancelled).toHaveBeenCalledOnce();
+    expect(mocks.googleDelete).toHaveBeenCalledOnce();
+    // A stale/historical roster must not be used as a team recipient fallback.
+    expect(mocks.sendCancelled).not.toHaveBeenCalled();
+    expect(mocks.notifySlack).toHaveBeenCalledOnce();
+    expect(mocks.updateBooking).toHaveBeenCalledWith(booking.id, {
+      syncStatus: "partial",
+    });
+    expect(mocks.sendRescheduled).not.toHaveBeenCalled();
+  });
+
+  it("marks fallback cancellation partial when cleanup or delivery fails", async () => {
+    const booking = existingBooking();
+    booking.eventRefs = [
+      {
+        provider: "google",
+        accountId: "google-account",
+        calendarId: "primary",
+        eventId: "event-1",
+      },
+    ];
+    mocks.getBookingByToken.mockResolvedValue(booking);
+    const changedAt = "2026-08-12T00:00:00.000Z";
+    mocks.listMemberRecords.mockResolvedValueOnce([]).mockResolvedValue([
+      {
+        key: "one",
+        name: "One Renamed",
+        email: "one@example.com",
+        archivedAt: null,
+        createdAt: changedAt,
+        updatedAt: changedAt,
+      },
+    ]);
+    mocks.updateBookingTime
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: false, reason: "slot_taken" });
+    mocks.getAccount.mockResolvedValue(
+      account("google-account", "one", "google", "one@example.com"),
+    );
+    mocks.googleDelete.mockRejectedValueOnce(new Error("calendar unavailable"));
+    mocks.sendCancelled.mockRejectedValueOnce(new Error("mail unavailable"));
+
+    const result = await rescheduleBooking("manage-token", {
+      start: new Date(START_MS).toISOString(),
+      timezone: "UTC",
+    });
+
+    expect(result).toMatchObject({ ok: false, code: "slot_unavailable" });
+    expect(mocks.googleDelete).toHaveBeenCalledOnce();
+    expect(mocks.sendCancelled).toHaveBeenCalledOnce();
+    expect(mocks.notifySlack).toHaveBeenCalledOnce();
+    expect(mocks.updateBooking).toHaveBeenCalledOnce();
+    expect(mocks.updateBooking).toHaveBeenCalledWith(booking.id, {
+      syncStatus: "partial",
+    });
+    expect(booking.syncStatus).toBe("partial");
+  });
+
+  it("rolls back before rethrowing an active-roster read failure", async () => {
+    const booking = existingBooking();
+    mocks.getBookingByToken.mockResolvedValue(booking);
+    mocks.listMemberRecords
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(new Error("roster unavailable"));
+
+    await expect(
+      rescheduleBooking("manage-token", {
+        start: new Date(START_MS).toISOString(),
+        timezone: "UTC",
+      }),
+    ).rejects.toThrow("roster unavailable");
+
+    expect(mocks.updateBookingTime).toHaveBeenCalledTimes(2);
+    expect(mocks.sendRescheduled).not.toHaveBeenCalled();
+  });
+
+  it("excludes an archived member from a later team cancellation", async () => {
+    const booking = existingBooking();
+    booking.attendeeMemberKeys = ["one"];
+    mocks.getBookingByToken.mockResolvedValue(booking);
+    mocks.listMemberRecords.mockResolvedValue([
+      {
+        key: "two",
+        name: "Two",
+        email: "two@example.com",
+        archivedAt: "2026-08-10T00:00:00.000Z",
+        createdAt: "2026-08-01T00:00:00.000Z",
+        updatedAt: "2026-08-10T00:00:00.000Z",
+      },
+    ]);
+
+    const result = await cancelBooking("manage-token");
+
+    expect(result.ok).toBe(true);
+    expect(mocks.sendCancelled).toHaveBeenCalledOnce();
+    expect(mocks.sendCancelled.mock.calls[0]?.[1]).toEqual([
+      { key: "one", name: "One", email: "one@example.com" },
+    ]);
+    expect(mocks.sendCancelled.mock.calls[0]?.[2].members).toEqual([
+      { key: "one", name: "One", email: "one@example.com" },
+    ]);
+  });
+
+  it("keeps an archived personal-page owner for cancellation delivery", async () => {
+    const booking = existingBooking();
+    booking.pageKey = "two";
+    booking.attendeeMemberKeys = ["two"];
+    mocks.getBookingByToken.mockResolvedValue(booking);
+    mocks.listMemberRecords.mockResolvedValue([
+      {
+        key: "two",
+        name: "Two Historical",
+        email: "two-old@example.com",
+        archivedAt: "2026-08-10T00:00:00.000Z",
+        createdAt: "2026-08-01T00:00:00.000Z",
+        updatedAt: "2026-08-10T00:00:00.000Z",
+      },
+    ]);
+
+    const result = await cancelBooking("manage-token");
+
+    expect(result.ok).toBe(true);
+    expect(mocks.sendCancelled.mock.calls[0]?.[1]).toEqual([
+      { key: "two", name: "Two Historical", email: "two-old@example.com" },
+    ]);
+    expect(mocks.sendCancelled.mock.calls[0]?.[2].members).toContainEqual({
+      key: "two",
+      name: "Two Historical",
+      email: "two-old@example.com",
+    });
   });
 
   it("tries healthy organizer accounts in preference order", async () => {
@@ -206,7 +630,9 @@ describe("booking delivery and duration invariants", () => {
     if (!result.ok) throw new Error("booking unexpectedly failed");
     expect(mocks.microsoftCreate).toHaveBeenCalledOnce();
     expect(mocks.googleCreate).toHaveBeenCalledOnce();
-    expect(result.booking.meetingUrl).toBe("https://meet.google.com/actual-join");
+    expect(result.booking.meetingUrl).toBe(
+      "https://meet.google.com/actual-join",
+    );
     expect(result.booking.eventRefs[0]?.accountId).toBe("google");
     expect(result.booking.syncStatus).toBe("synced");
   });
@@ -216,7 +642,10 @@ describe("booking delivery and duration invariants", () => {
       account("company-ms", "one", "microsoft", "one@example.com"),
       account("google", "two", "google", "two@gmail.com"),
     ]);
-    mocks.microsoftCreate.mockResolvedValueOnce({ eventId: "no-video", meetingUrl: null });
+    mocks.microsoftCreate.mockResolvedValueOnce({
+      eventId: "no-video",
+      meetingUrl: null,
+    });
     mocks.googleCreate.mockResolvedValueOnce({
       eventId: "with-video",
       meetingUrl: "https://meet.google.com/actual-join",
@@ -233,7 +662,7 @@ describe("booking delivery and duration invariants", () => {
     expect(mocks.microsoftDelete).toHaveBeenCalledWith(
       "token-company-ms",
       "",
-      "no-video"
+      "no-video",
     );
     expect(mocks.googleCreate).toHaveBeenCalledOnce();
   });
@@ -242,7 +671,10 @@ describe("booking delivery and duration invariants", () => {
     mocks.listAccounts.mockResolvedValue([
       account("personal-ms", "one", "microsoft", "one@outlook.com"),
     ]);
-    mocks.microsoftCreate.mockResolvedValueOnce({ eventId: "plain-event", meetingUrl: null });
+    mocks.microsoftCreate.mockResolvedValueOnce({
+      eventId: "plain-event",
+      meetingUrl: null,
+    });
 
     const result = await createBooking({
       start: new Date(START_MS).toISOString(),
@@ -262,7 +694,9 @@ describe("booking delivery and duration invariants", () => {
     mocks.listAccounts.mockResolvedValue([
       account("company-ms", "one", "microsoft", "one@example.com"),
     ]);
-    mocks.microsoftCreate.mockRejectedValueOnce(new Error("provider unavailable"));
+    mocks.microsoftCreate.mockRejectedValueOnce(
+      new Error("provider unavailable"),
+    );
 
     const result = await createBooking({
       start: new Date(START_MS).toISOString(),
@@ -273,14 +707,22 @@ describe("booking delivery and duration invariants", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(mocks.sendConfirmed).toHaveBeenCalledWith(expect.any(Object), mocks.config.members, {
-      notifyGuestsDirectly: true,
-    });
+    expect(mocks.sendConfirmed).toHaveBeenCalledWith(
+      expect.any(Object),
+      mocks.config.members,
+      {
+        notifyGuestsDirectly: true,
+        config: mocks.config,
+      },
+    );
   });
 
   it("returns a stale conflict when another reschedule already moved the booking", async () => {
     mocks.getBookingByToken.mockResolvedValue(existingBooking());
-    mocks.updateBookingTime.mockResolvedValueOnce({ ok: false, reason: "stale" });
+    mocks.updateBookingTime.mockResolvedValueOnce({
+      ok: false,
+      reason: "stale",
+    });
 
     const result = await rescheduleBooking("manage-token", {
       start: new Date(START_MS).toISOString(),

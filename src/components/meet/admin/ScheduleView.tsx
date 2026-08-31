@@ -156,8 +156,11 @@ function syncTone(status: AdminBooking["syncStatus"]): string {
 
 export function ScheduleView({
   onUnauthorized,
+  rosterRevision,
 }: {
   onUnauthorized: () => void;
+  /** Incremented after a member mutation so host labels stay fresh. */
+  rosterRevision: number;
 }) {
   const unauthorizedRef = useRef(onUnauthorized);
   const [phase, setPhase] = useState<Phase>("loading");
@@ -251,7 +254,7 @@ export function ScheduleView({
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [load]);
+  }, [load, rosterRevision]);
 
   const setFilter = <Key extends keyof ScheduleFilters>(
     key: Key,

@@ -15,6 +15,7 @@ vi.mock("@/lib/meet/config", () => ({
 }));
 vi.mock("@/lib/meet/store", () => ({
   getMeetStore: () => ({
+    listMemberRecords: async () => [],
     listBookingsStartingInRange: mocks.listBookingsStartingInRange,
   }),
 }));

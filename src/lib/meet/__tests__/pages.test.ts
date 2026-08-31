@@ -6,7 +6,7 @@ import {
   type SlotCandidate,
 } from "@/lib/meet/slots";
 import { MemoryMeetStore } from "@/lib/meet/store";
-import { configForPage } from "@/lib/meet/pages";
+import { configForPage, memberWindowConfig } from "@/lib/meet/pages";
 import type { Booking, BusyInterval, PageSettings } from "@/lib/meet/types";
 import { utcToWall } from "@/lib/meet/tz";
 
@@ -196,6 +196,8 @@ describe("effective config never offers a grid it would then refuse", () => {
     enabled: true,
     headline: null,
     blurb: null,
+    timezone: null,
+    timezoneUntil: null,
     windowStartMin: null,
     windowEndMin: null,
     bookableWeekdays: null,
@@ -269,5 +271,40 @@ describe("effective config never offers a grid it would then refuse", () => {
     expect(effective.bookableWeekdays).toContain(6);
     expect(saturday.length).toBeGreaterThan(0);
     expect(utcToWall(LA, saturday[0].startMs).weekday).toBe(6);
+  });
+
+  it("uses a permanent member timezone for both personal and team eligibility", () => {
+    const window = memberWindowConfig(
+      config,
+      settings({
+        timezone: "Asia/Baku",
+        windowStartMin: 9 * 60,
+        windowEndMin: 17 * 60,
+        bookableWeekdays: [1, 2, 3],
+        durationMinutes: 60,
+      })
+    );
+    expect(window.hostTimezone).toBe("Asia/Baku");
+    expect(window.windowStartMin).toBe(540);
+    expect(window.windowEndMin).toBe(1020);
+    expect(window.bookableWeekdays).toEqual([1, 2, 3]);
+    // Personal duration is intentionally not part of team eligibility.
+    expect(window.durationMinutes).toBe(config.durationMinutes);
+  });
+
+  it("moves a member grid on the scheduled civil date", () => {
+    const moving = memberWindowConfig(
+      config,
+      settings({
+        timezone: "Europe/London",
+        timezoneUntil: { beforeDate: "2026-09-12", timezone: "Asia/Baku" },
+        windowStartMin: 9 * 60,
+        windowEndMin: 17 * 60,
+      })
+    );
+    const [before] = candidateSlots(moving, { year: 2026, month: 9, day: 11 }, 1);
+    const [after] = candidateSlots(moving, { year: 2026, month: 9, day: 14 }, 1);
+    expect(new Date(before.startMs).toISOString()).toBe("2026-09-11T05:00:00.000Z");
+    expect(new Date(after.startMs).toISOString()).toBe("2026-09-14T08:00:00.000Z");
   });
 });

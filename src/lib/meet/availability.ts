@@ -2,8 +2,15 @@ import "server-only";
 import { getMeetConfig, type MeetConfig } from "./config";
 import { decryptSecret } from "./crypto";
 import { ensureMockReady } from "./mock";
+import { getRuntimeMeetConfig } from "./members";
+import { teamMemberWindows } from "./pages";
 import { getProvider } from "./providers";
-import { availableSlots, candidateSlots } from "./slots";
+import {
+  availableSlots,
+  candidateSlots,
+  transitionZones,
+  type SlotCandidate,
+} from "./slots";
 import { getMeetStore } from "./store";
 import { addCivilDays, formatCivilDate, parseCivilDate, utcToWall, wallToUtcMs } from "./tz";
 import {
@@ -172,12 +179,49 @@ const CACHE_TTL_MS = 60_000;
  * survive the horizon filter anyway, a single canonical fetch per day serves
  * every caller with an identical result.
  */
-function canonicalWindow(config: MeetConfig): { key: string; fromMs: number; toMs: number } {
-  const today = utcToWall(config.hostTimezone, Date.now());
-  const fromMs = wallToUtcMs(config.hostTimezone, today.year, today.month, today.day, 0, 0);
-  const edge = addCivilDays(today.year, today.month, today.day, config.horizonDays + 1);
-  const toMs = wallToUtcMs(config.hostTimezone, edge.year, edge.month, edge.day, 0, 0);
-  return { key: formatCivilDate(today.year, today.month, today.day), fromMs, toMs };
+function canonicalWindow(
+  config: MeetConfig,
+  memberWindows: Iterable<MeetConfig>
+): { key: string; fromMs: number; toMs: number } {
+  const zones = new Set<string>();
+  for (const candidate of [config, ...memberWindows]) {
+    for (const zone of transitionZones(candidate)) zones.add(zone);
+  }
+
+  let fromMs = Number.POSITIVE_INFINITY;
+  let toMs = Number.NEGATIVE_INFINITY;
+  const civilKeys: string[] = [];
+  const nowMs = Date.now();
+  for (const zone of [...zones].sort()) {
+    const today = utcToWall(zone, nowMs);
+    civilKeys.push(`${zone}:${formatCivilDate(today.year, today.month, today.day)}`);
+    fromMs = Math.min(
+      fromMs,
+      wallToUtcMs(zone, today.year, today.month, today.day, 0, 0)
+    );
+    const edge = addCivilDays(today.year, today.month, today.day, config.horizonDays + 1);
+    toMs = Math.max(toMs, wallToUtcMs(zone, edge.year, edge.month, edge.day, 0, 0));
+  }
+
+  // Active roster membership belongs in the key: the provider map is a
+  // roster-shaped value, so a cached pre-add/pre-archive map is never valid
+  // for a different team even when its time bounds happen to match.
+  const roster = config.members.map((member) => member.key).sort().join(",");
+  return { key: `${civilKeys.join("|")}|${roster}`, fromMs, toMs };
+}
+
+function unionCandidates(configs: Iterable<MeetConfig>, fromCivil: {
+  year: number;
+  month: number;
+  day: number;
+}, days: number): SlotCandidate[] {
+  const byStart = new Map<number, SlotCandidate>();
+  for (const config of configs) {
+    for (const candidate of candidateSlots(config, fromCivil, days)) {
+      if (!byStart.has(candidate.startMs)) byStart.set(candidate.startMs, candidate);
+    }
+  }
+  return [...byStart.values()].sort((a, b) => a.startMs - b.startMs);
 }
 
 // globalThis-stashed like the store, so dev-mode module duplication across
@@ -232,8 +276,14 @@ export async function computeAvailability(
     config?: MeetConfig;
   } = {}
 ): Promise<AvailabilityResponse> {
-  const globalConfig = getMeetConfig();
-  const config = options.config ?? globalConfig;
+  // A supplied config (personal pages and pure tests) already carries the
+  // current roster. Rebuild only the team defaults around that roster; without
+  // one, load the persisted active roster now rather than using env forever.
+  const runtimeConfig = options.config ?? (await getRuntimeMeetConfig());
+  const globalConfig = options.config
+    ? { ...getMeetConfig(), members: runtimeConfig.members }
+    : runtimeConfig;
+  const config = runtimeConfig;
   const { hostKey, requiredMemberKeys } = options;
   if (config.mockMode) await ensureMockReady();
 
@@ -243,7 +293,10 @@ export async function computeAvailability(
   // Fetch and cache the canonical window, never the caller's. A busy interval
   // outside the caller's days simply overlaps none of their candidates, so a
   // wider map is always safe; a narrower one would not be.
-  const { key: cacheKey, fromMs: windowFromMs, toMs: canonicalToMs } = canonicalWindow(config);
+  const memberWindows = await teamMemberWindows(globalConfig);
+  const canonicalConfigs = [...memberWindows.values(), config];
+  const { key: cacheKey, fromMs: windowFromMs, toMs: canonicalToMs } =
+    canonicalWindow(config, canonicalConfigs);
 
   const cache = busyCache();
   const nowMs = Date.now();
@@ -314,8 +367,27 @@ export async function computeAvailability(
     quorum = 1;
   }
 
-  const candidates = candidateSlots(config, fromCivil, days);
-  let slots = availableSlots(config, candidates, busyMap, Date.now(), quorum);
+  let candidates: SlotCandidate[];
+  let memberSlotSets: Map<string, ReadonlySet<number>> | undefined;
+  if (hostKey === undefined) {
+    candidates = unionCandidates(memberWindows.values(), fromCivil, days);
+    memberSlotSets = new Map(
+      [...memberWindows].map(([memberKey, window]) => [
+        memberKey,
+        new Set(candidateSlots(window, fromCivil, days).map((candidate) => candidate.startMs)),
+      ])
+    );
+  } else {
+    candidates = candidateSlots(config, fromCivil, days);
+  }
+  let slots = availableSlots(
+    config,
+    candidates,
+    busyMap,
+    Date.now(),
+    quorum,
+    memberSlotSets
+  );
   const required = requiredMemberKeys ? [...requiredMemberKeys] : [];
   if (required.length > 0) {
     slots = slots.filter((s) => required.every((key) => s.freeMemberKeys.includes(key)));
@@ -338,7 +410,7 @@ export async function slotFreeMembers(
   startMs: number,
   durationMinutes?: number
 ): Promise<{ free: Member[]; quorumMet: boolean }> {
-  const config = getMeetConfig();
+  const config = await getRuntimeMeetConfig();
   if (config.mockMode) await ensureMockReady();
 
   const duration = durationMinutes ?? config.durationMinutes;

@@ -1,4 +1,5 @@
 import { getMeetConfig } from "./config";
+import { listActiveMembers } from "./members";
 import { getMeetStore } from "./store";
 import { addCivilDays, formatCivilDate, utcToWall, wallToUtcMs } from "./tz";
 import type {
@@ -181,9 +182,9 @@ let seeding: Promise<void> | null = null;
  */
 export async function ensureMockReady(): Promise<void> {
   if (!seeding) {
-    seeding = seedMockAccounts().catch((err: unknown) => {
-      seeding = null; // let a later call retry after a failed seed
-      throw err;
+    seeding = seedMockAccounts().finally(() => {
+      // Runtime additions also need a deterministic fake calendar.
+      seeding = null;
     });
   }
   return seeding;
@@ -192,10 +193,15 @@ export async function ensureMockReady(): Promise<void> {
 async function seedMockAccounts(): Promise<void> {
   const store = getMeetStore();
   const existing = await store.listAccounts();
-  if (existing.length > 0) return;
-
-  const { members } = getMeetConfig();
+  const members = await listActiveMembers();
   for (const member of members) {
+    if (
+      existing.some(
+        (account) => account.memberKey === member.key && account.provider === "google"
+      )
+    ) {
+      continue;
+    }
     await store.upsertAccount({
       memberKey: member.key,
       provider: "google",
@@ -206,7 +212,12 @@ async function seedMockAccounts(): Promise<void> {
     });
   }
   const first = members[0];
-  if (first) {
+  if (
+    first &&
+    !existing.some(
+      (account) => account.memberKey === first.key && account.provider === "microsoft"
+    )
+  ) {
     await store.upsertAccount({
       memberKey: first.key,
       provider: "microsoft",

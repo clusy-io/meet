@@ -19,6 +19,13 @@ export interface Member {
   email: string;
 }
 
+/** A persisted roster override layered over the MEET_MEMBERS baseline. */
+export interface MemberRecord extends Member {
+  archivedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export type CalendarProviderId = "google" | "microsoft";
 
 /** One calendar inside a connected account (a person may watch several). */
@@ -61,6 +68,13 @@ export interface PageSettings {
   headline: string | null;
   /** One-line subheading under the heading. */
   blurb: string | null;
+  /** IANA zone this host's working hours are evaluated in; null inherits. */
+  timezone: string | null;
+  /**
+   * Optional scheduled move. Civil days before `beforeDate` use this zone;
+   * days on/after it use `timezone` (or the inherited team zone).
+   */
+  timezoneUntil: { beforeDate: string; timezone: string } | null;
   windowStartMin: number | null;
   windowEndMin: number | null;
   bookableWeekdays: number[] | null;

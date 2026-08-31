@@ -42,9 +42,9 @@ const NAV_ITEMS: Array<{
     description: "Upcoming calls and history",
   },
   {
-    id: "pages",
-    label: "Booking pages",
-    description: "Copy, availability and alerts",
+    id: "members",
+    label: "Members",
+    description: "People, booking rules and pages",
   },
   {
     id: "calendars",
@@ -55,13 +55,15 @@ const NAV_ITEMS: Array<{
 
 function viewFromHash(hash: string): AdminWorkspaceView {
   const value = hash.replace(/^#/, "");
-  return value === "pages" || value === "calendars" ? value : "schedule";
+  if (value === "pages") return "members";
+  return value === "members" || value === "calendars" ? value : "schedule";
 }
 
 export function AdminPanel() {
   const [phase, setPhase] = useState<Phase>("loading");
   const [overview, setOverview] = useState<AdminOverview | null>(null);
   const [activeView, setActiveView] = useState<AdminWorkspaceView>("schedule");
+  const [rosterRevision, setRosterRevision] = useState(0);
   const [banner, setBanner] = useState<{
     tone: "ok" | "warn";
     text: string;
@@ -110,7 +112,7 @@ export function AdminPanel() {
     return () => window.cancelAnimationFrame(syncOAuthResult);
   }, []);
 
-  const fetchOverview = useCallback(async () => {
+  const fetchOverview = useCallback(async (preserveExisting = false) => {
     try {
       const response = await fetch("/api/meet/admin/accounts", {
         cache: "no-store",
@@ -124,7 +126,14 @@ export function AdminPanel() {
       setOverview((await response.json()) as AdminOverview);
       setPhase("ready");
     } catch {
-      setPhase("failed");
+      if (preserveExisting) {
+        setBanner({
+          tone: "warn",
+          text: "The member change was saved, but calendar readiness could not refresh. Try the Calendars tab in a moment.",
+        });
+      } else {
+        setPhase("failed");
+      }
     }
   }, []);
 
@@ -216,8 +225,7 @@ export function AdminPanel() {
                 <span>
                   {healthyMembers}/{overview.members.length} calendars ready
                   <span className="mx-2 text-hairline-strong">/</span>
-                  Booking hours {overview.window.start}–{overview.window.end}
-                  {" "}
+                  Booking hours {overview.window.start}–{overview.window.end}{" "}
                   {overview.hostTimezone.replaceAll("_", " ")}
                 </span>
               </div>
@@ -303,10 +311,19 @@ export function AdminPanel() {
 
         {/* Keep every workspace mounted so drafts survive switching tabs. */}
         <div hidden={activeView !== "schedule"}>
-          <ScheduleView onUnauthorized={handleUnauthorized} />
+          <ScheduleView
+            onUnauthorized={handleUnauthorized}
+            rosterRevision={rosterRevision}
+          />
         </div>
-        <div hidden={activeView !== "pages"}>
-          <BookingPagesView onUnauthorized={handleUnauthorized} />
+        <div hidden={activeView !== "members"}>
+          <BookingPagesView
+            onUnauthorized={handleUnauthorized}
+            onRosterChange={() => {
+              setRosterRevision((revision) => revision + 1);
+              void fetchOverview(true);
+            }}
+          />
         </div>
         <div hidden={activeView !== "calendars"}>
           <CalendarConnectionsView

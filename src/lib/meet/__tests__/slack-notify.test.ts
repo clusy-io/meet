@@ -15,6 +15,9 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/meet/config", () => ({ getMeetConfig: () => mocks.config }));
+vi.mock("@/lib/meet/members", () => ({
+  getHistoricalMeetConfig: async () => mocks.config,
+}));
 vi.mock("@/lib/meet/pages", () => ({ slackWebhookForPage: mocks.webhookForPage }));
 vi.mock("@/lib/meet/slack", () => ({
   getMeetingSlackSettings: mocks.settings,

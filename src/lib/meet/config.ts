@@ -1,4 +1,5 @@
 import "server-only";
+import { isValidTimezone, parseCivilDate } from "./tz";
 import type { Member } from "./types";
 
 /**
@@ -9,9 +10,18 @@ import type { Member } from "./types";
  * Server-only (reads process.env); never import from client components.
  */
 
+export interface TimezoneHandover {
+  /** First civil day evaluated in `hostTimezone`. */
+  beforeDate: string;
+  /** Zone used for civil days before `beforeDate`. */
+  timezone: string;
+}
+
 export interface MeetConfig {
   /** Host timezone the availability window is defined in. */
   hostTimezone: string;
+  /** Optional scheduled timezone handover for the team defaults. */
+  timezoneUntil?: TimezoneHandover | null;
   /** Bookable window, minutes from midnight in hostTimezone. */
   windowStartMin: number; // 8:30 -> 510
   windowEndMin: number; // 22:00 -> 1320
@@ -118,13 +128,17 @@ function timeEnv(name: string, fallback: number): number {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
-function validTimezone(value: string): boolean {
-  try {
-    new Intl.DateTimeFormat("en-US", { timeZone: value });
-    return true;
-  } catch {
-    return false;
+/** MEET_TIMEZONE_UNTIL="2026-09-12:Asia/Baku". */
+function timezoneUntilEnv(): TimezoneHandover | null {
+  const raw = process.env.MEET_TIMEZONE_UNTIL?.trim();
+  if (!raw) return null;
+  const match = /^(\d{4}-\d{2}-\d{2}):(.+)$/.exec(raw);
+  if (!match || !parseCivilDate(match[1]) || !isValidTimezone(match[2])) {
+    throw new Error(
+      'meet: MEET_TIMEZONE_UNTIL must be "YYYY-MM-DD:<IANA zone>"'
+    );
   }
+  return { beforeDate: match[1], timezone: match[2] };
 }
 
 function siteOriginEnv(mockMode: boolean): string {
@@ -227,7 +241,7 @@ export function getMeetConfig(): MeetConfig {
     "America/Los_Angeles",
     mockMode
   );
-  if (!validTimezone(hostTimezone)) {
+  if (!isValidTimezone(hostTimezone)) {
     throw new Error(`meet: MEET_HOST_TIMEZONE is not a valid IANA timezone: ${hostTimezone}`);
   }
   const windowStartMin = timeEnv("MEET_WINDOW_START", 8 * 60 + 30);
@@ -252,12 +266,13 @@ export function getMeetConfig(): MeetConfig {
     throw new Error("meet: MEET_HORIZON_DAYS must be between 0 and 366");
   }
   const quorum = intEnv("MEET_QUORUM", Math.min(2, members.length));
-  if (quorum < 1 || quorum > members.length) {
-    throw new Error(`meet: MEET_QUORUM must be between 1 and ${members.length}`);
+  if (quorum < 1) {
+    throw new Error("meet: MEET_QUORUM must be at least 1");
   }
 
   cached = {
     hostTimezone,
+    timezoneUntil: timezoneUntilEnv(),
     windowStartMin,
     windowEndMin,
     bookableWeekdays: [1, 2, 3, 4, 5],

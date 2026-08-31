@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/meet/admin";
-import { getMeetConfig } from "@/lib/meet/config";
+import { getHistoricalMeetConfig } from "@/lib/meet/members";
 import { getMeetStore } from "@/lib/meet/store";
 
 export const runtime = "nodejs";
@@ -24,7 +24,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ message: "unauthorized" }, { status: 401 });
   }
 
-  const config = getMeetConfig();
+  const config = await getHistoricalMeetConfig();
   const nowMs = Date.now();
   const bookings = await getMeetStore().listBookingsStartingInRange(
     nowMs - PAST_DAYS * DAY_MS,

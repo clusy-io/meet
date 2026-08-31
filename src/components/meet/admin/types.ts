@@ -64,6 +64,8 @@ export interface BookingsResponse {
 export interface PersonalPage {
   memberKey: string;
   memberName: string;
+  /** Canonical address used for booking notifications and calendar invites. */
+  memberEmail: string;
   url: string;
   enabled: boolean;
   /** Stored headline override; older rows may contain only the member name. */
@@ -71,6 +73,11 @@ export interface PersonalPage {
   blurb: string | null;
   /** The host-specific values used when every override is cleared. */
   inherited: {
+    /** Permanent/target IANA zone for this host's working hours. */
+    timezone: string;
+    /** IANA zone currently in force, accounting for a scheduled move. */
+    timezoneToday: string;
+    timezoneUntil: { beforeDate: string; timezone: string } | null;
     durationMinutes: number;
     slotStepMinutes: number;
     windowStart: string;
@@ -82,6 +89,9 @@ export interface PersonalPage {
     eventDescription: string;
   };
   effective: {
+    timezone: string;
+    timezoneToday: string;
+    timezoneUntil: { beforeDate: string; timezone: string } | null;
     durationMinutes: number;
     slotStepMinutes: number;
     windowStart: string;
@@ -93,6 +103,8 @@ export interface PersonalPage {
     eventDescription: string;
   };
   overrides: {
+    timezone: string | null;
+    timezoneUntil: { beforeDate: string; timezone: string } | null;
     durationMinutes: number | null;
     slotStepMinutes: number | null;
     windowStartMin: number | null;
@@ -110,6 +122,9 @@ export interface PersonalPage {
 export interface PersonalPagesResponse {
   hostTimezone: string;
   defaults: {
+    timezone: string;
+    timezoneToday: string;
+    timezoneUntil: { beforeDate: string; timezone: string } | null;
     durationMinutes: number;
     slotStepMinutes: number;
     windowStart: string;
@@ -121,6 +136,12 @@ export interface PersonalPagesResponse {
     eventDescription: string;
   };
   pages: PersonalPage[];
+  /** Removed members stay recoverable without appearing on public booking pages. */
+  archivedMembers: Array<{
+    key: string;
+    name: string;
+    email: string;
+  }>;
 }
 
-export type AdminWorkspaceView = "schedule" | "pages" | "calendars";
+export type AdminWorkspaceView = "schedule" | "members" | "calendars";

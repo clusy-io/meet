@@ -1,10 +1,16 @@
 import "server-only";
 
 import { cache } from "react";
-import { getMeetConfig, type MeetConfig } from "./config";
+import type { MeetConfig } from "./config";
 import { decryptSecret } from "./crypto";
+import {
+  getEffectiveMeetConfig,
+  getHistoricalMeetConfig,
+  getRuntimeMeetConfig,
+} from "./members";
 import { getMeetStore } from "./store";
 import type { Member, PageSettings } from "./types";
+import { isValidTimezone, parseCivilDate } from "./tz";
 
 /**
  * meet — personal booking pages (/<memberKey>).
@@ -67,7 +73,7 @@ export function configForPage(
   settings: PageSettings | null
 ): MeetConfig {
   const config: MeetConfig = {
-    ...base,
+    ...memberWindowConfig(base, settings),
     // A personal page is booked when its one owner is free. This is why the
     // page can reuse availableSlots unchanged.
     quorum: 1,
@@ -82,13 +88,6 @@ export function configForPage(
     `Booked via ${base.siteOrigin.replace(/^https?:\/\//, "")}/${member.key}.`;
 
   if (!settings) return config;
-
-  const windowStart = settings.windowStartMin ?? base.windowStartMin;
-  const windowEnd = settings.windowEndMin ?? base.windowEndMin;
-  if (windowStart < windowEnd) {
-    config.windowStartMin = windowStart;
-    config.windowEndMin = windowEnd;
-  }
 
   const duration = settings.durationMinutes ?? base.durationMinutes;
   if (duration > 0 && duration <= config.windowEndMin - config.windowStartMin) {
@@ -114,27 +113,73 @@ export function configForPage(
     config.horizonDays = settings.horizonDays;
   }
 
-  const weekdays = settings.bookableWeekdays;
-  if (Array.isArray(weekdays)) {
-    const valid = [...new Set(weekdays)].filter(
-      (d) => Number.isInteger(d) && d >= 1 && d <= 7
-    );
-    if (valid.length > 0) config.bookableWeekdays = valid.sort((a, b) => a - b);
-  }
-
   if (settings.eventTitle) config.eventTitle = settings.eventTitle;
   if (settings.eventDescription) config.eventDescription = settings.eventDescription;
 
   return config;
 }
 
-function toPage(member: Member, settings: PageSettings | null): MeetPage {
+/**
+ * The part of a personal page that controls whether its owner may count
+ * towards the TEAM quorum. Meeting length and grid remain team-wide there;
+ * only the owner's timezone, hours and weekdays are personal.
+ */
+export function memberWindowConfig(
+  base: MeetConfig,
+  settings: PageSettings | null
+): MeetConfig {
+  const config: MeetConfig = { ...base };
+  if (!settings) return config;
+
+  if (settings.timezone && isValidTimezone(settings.timezone)) {
+    config.hostTimezone = settings.timezone;
+  }
+  if (
+    settings.timezoneUntil &&
+    parseCivilDate(settings.timezoneUntil.beforeDate) &&
+    isValidTimezone(settings.timezoneUntil.timezone)
+  ) {
+    config.timezoneUntil = { ...settings.timezoneUntil };
+  }
+
+  const windowStart = settings.windowStartMin ?? base.windowStartMin;
+  const windowEnd = settings.windowEndMin ?? base.windowEndMin;
+  if (windowStart < windowEnd) {
+    config.windowStartMin = windowStart;
+    config.windowEndMin = windowEnd;
+  }
+
+  const weekdays = settings.bookableWeekdays;
+  if (Array.isArray(weekdays)) {
+    const valid = [...new Set(weekdays)].filter(
+      (day) => Number.isInteger(day) && day >= 1 && day <= 7
+    );
+    if (valid.length > 0) config.bookableWeekdays = valid.sort((a, b) => a - b);
+  }
+  return config;
+}
+
+/** Active roster member -> their eligibility window for team bookings. */
+export async function teamMemberWindows(
+  base: MeetConfig
+): Promise<Map<string, MeetConfig>> {
+  const rows = await getMeetStore().listPageSettings();
+  const byKey = new Map(rows.map((row) => [row.memberKey, row]));
+  return new Map(
+    base.members.map((member) => [
+      member.key,
+      memberWindowConfig(base, byKey.get(member.key) ?? null),
+    ])
+  );
+}
+
+function toPage(base: MeetConfig, member: Member, settings: PageSettings | null): MeetPage {
   return {
     member,
     enabled: settings?.enabled ?? true,
     headline: settings?.headline?.trim() || member.name,
     blurb: settings?.blurb?.trim() || null,
-    config: configForPage(getMeetConfig(), member, settings),
+    config: configForPage(base, member, settings),
     slackWebhookEnc: settings?.slackWebhookEnc ?? null,
     settings,
   };
@@ -152,17 +197,27 @@ export function isReservedPageSlug(slug: string): boolean {
  */
 export const getPage = cache(async (memberKey: string): Promise<MeetPage | null> => {
   if (isReservedPageSlug(memberKey)) return null;
-  const member = getMeetConfig().members.find((m) => m.key === memberKey);
+  const config = await getRuntimeMeetConfig();
+  const member = config.members.find((m) => m.key === memberKey);
   if (!member) return null;
-  return toPage(member, await getMeetStore().getPageSettings(memberKey));
+  return toPage(config, member, await getMeetStore().getPageSettings(memberKey));
 });
 
+/** Existing-booking lookup that preserves archived host identity/settings. */
+export async function getHistoricalPage(memberKey: string): Promise<MeetPage | null> {
+  if (isReservedPageSlug(memberKey)) return null;
+  const config = await getHistoricalMeetConfig();
+  const member = config.members.find((candidate) => candidate.key === memberKey);
+  if (!member) return null;
+  return toPage(config, member, await getMeetStore().getPageSettings(memberKey));
+}
+
 /** Every configured member's page, in config order, live or not. */
-export async function listPages(): Promise<MeetPage[]> {
-  const config = getMeetConfig();
+export async function listPages(base?: MeetConfig): Promise<MeetPage[]> {
+  const config = base ?? (await getEffectiveMeetConfig());
   const rows = await getMeetStore().listPageSettings();
   const byKey = new Map(rows.map((r) => [r.memberKey, r]));
-  return config.members.map((member) => toPage(member, byKey.get(member.key) ?? null));
+  return config.members.map((member) => toPage(config, member, byKey.get(member.key) ?? null));
 }
 
 /**
@@ -204,7 +259,7 @@ export async function slackWebhookForPage(
 ): Promise<string> {
   if (!pageKey) return teamWebhookUrl;
   try {
-    const page = await getPage(pageKey);
+    const page = await getHistoricalPage(pageKey);
     if (!page) return teamWebhookUrl;
     return pageSlackWebhook(page) ?? teamWebhookUrl;
   } catch (error) {

@@ -6,7 +6,7 @@ This guide configures a standalone Meet deployment at an origin such as
 ## 1. Database
 
 Create a Supabase project and run [`schema.sql`](schema.sql) in its SQL editor.
-The script creates `meet_accounts` and `meet_bookings`, `meet_page_settings`, enables RLS,
+The script creates `meet_members`, `meet_accounts`, `meet_bookings`, `meet_page_settings`, enables RLS,
 and adds newer guest/reminder columns with explicit additive migrations.
 
 Keep `SUPABASE_SERVICE_ROLE_KEY` server-only. The schema intentionally grants
@@ -17,6 +17,12 @@ It is additive and idempotent, and it repairs its own constraints: the
 booking-overlap constraint is checked by definition rather than by name, so an
 installation created before per-person pages is upgraded in place instead of
 silently keeping the older, global version.
+
+For an existing deployment, apply the DDL before the application release. The
+new runtime reads `meet_members` on every roster-dependent request; an empty
+table is intentionally a no-op overlay on `MEET_MEMBERS`, so the migration is
+safe while old instances are still draining. The focused migration is also at
+[`migrations/2026-08-31-runtime-members-and-timezones.sql`](migrations/2026-08-31-runtime-members-and-timezones.sql).
 
 ## 2. Google OAuth
 
@@ -57,6 +63,7 @@ Start from `.env.example`, leave `MEET_MOCK_MODE` empty, and set:
 | `MEET_MEMBERS` | JSON array of `{ key, name, email }` team members |
 | `MEET_QUORUM` | Minimum number of free members required for a slot |
 | `MEET_HOST_TIMEZONE` | IANA zone that defines working hours |
+| `MEET_TIMEZONE_UNTIL` | Optional `YYYY-MM-DD:IANA/Zone`; days before the date use the named old zone, then switch to `MEET_HOST_TIMEZONE` |
 | `MEET_WINDOW_START`, `MEET_WINDOW_END` | Local booking window in `HH:MM` |
 | `MEET_DURATION_MINUTES` | Event duration |
 | `MEET_SLOT_STEP_MINUTES` | Grid step; must be at least the duration |
@@ -92,15 +99,26 @@ Deploy to a Node.js-compatible host. `vercel.json` schedules reminders every
 15 minutes; on another host, invoke `/api/meet/cron/reminders` on that cadence
 with `Authorization: Bearer $CRON_SECRET`.
 
-Open `/admin`, sign in, connect each account, and select every calendar that
-should count as busy. A selected calendar affects availability; the provider's
-primary calendar is used for event creation.
+Open `/admin`, sign in, add or restore active hosts through the authenticated
+`/api/meet/admin/members` roster API (or an admin UI wired to it), connect each
+account, and select every calendar that should count as busy. A selected
+calendar affects availability; the provider's primary calendar is used for
+event creation.
 
-Then open **Personal pages**. Every member of `MEET_MEMBERS` has a page at their
-key (`/ada`), live by default and running on the team-wide settings. Anything
+`MEET_MEMBERS` remains the durable bootstrap/baseline; runtime identity
+overrides, additions and archive markers live in `meet_members`. Do not remove
+the baseline after launch. Archiving is deliberately soft: it pauses the page
+and removes the host from live scheduling while retaining settings, accounts
+and booking history. It is blocked if quorum would break or any future or
+in-progress confirmed booking still names that host.
+
+Then open **Personal pages**. Every active member has a page at their key
+(`/ada`). Baseline members with no settings row are live on inherited defaults;
+runtime additions and restorations stay paused until explicitly published. Anything
 you leave blank there keeps inheriting, so you only need to fill in what differs
-for that person: their hours, meeting length, notice, heading, event title, or
-their own Slack webhook. Switching a page off makes it 404 for visitors while
+for that person: their timezone (including a dated move), hours/weekdays,
+meeting length, notice, heading, event title, or their own Slack webhook.
+Switching a page off makes it 404 for visitors while
 keeping it visible here.
 
 A page whose owner has no readable calendar can only ever show an empty month,

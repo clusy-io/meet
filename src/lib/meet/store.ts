@@ -1,7 +1,12 @@
 import "server-only";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { getMeetConfig } from "./config";
-import type { Booking, CalendarAccount, PageSettings } from "./types";
+import type {
+  Booking,
+  CalendarAccount,
+  MemberRecord,
+  PageSettings,
+} from "./types";
 
 /**
  * clusy/meet — persistence.
@@ -15,7 +20,37 @@ export type InsertBookingResult =
   | { ok: true }
   | { ok: false; reason: "slot_taken" | "not_confirmed" | "stale" };
 
+export type MemberWriteResult =
+  | { ok: true; member: MemberRecord }
+  | { ok: false; reason: "key_taken" | "email_taken" };
+
 export interface MeetStore {
+  /** Runtime roster rows layered over the MEET_MEMBERS baseline. */
+  listMemberRecords(): Promise<MemberRecord[]>;
+  getMemberRecord(memberKey: string): Promise<MemberRecord | null>;
+  insertMemberRecord(
+    member: Omit<MemberRecord, "createdAt" | "updatedAt">
+  ): Promise<MemberWriteResult>;
+  /** Insert a baseline row if absent; never overwrite a concurrent winner. */
+  ensureMemberRecord(
+    member: Omit<MemberRecord, "createdAt" | "updatedAt">
+  ): Promise<MemberWriteResult>;
+  upsertMemberRecord(
+    member: Omit<MemberRecord, "createdAt" | "updatedAt">
+  ): Promise<MemberWriteResult>;
+  /** Identity-only write: archive state and omitted identity fields are untouched. */
+  updateMemberIdentity(
+    memberKey: string,
+    patch: Partial<Pick<MemberRecord, "name" | "email">>
+  ): Promise<MemberWriteResult>;
+  /** Archive-only write: identity is deliberately untouched. */
+  updateMemberArchivedAt(
+    memberKey: string,
+    archivedAt: string | null
+  ): Promise<MemberRecord>;
+  /** Restore only the exact archive marker written by the compensating request. */
+  restoreMemberArchivedAt(memberKey: string, expectedArchivedAt: string): Promise<boolean>;
+
   listAccounts(): Promise<CalendarAccount[]>;
   getAccount(id: string): Promise<CalendarAccount | null>;
   /** Insert, or replace the row for the same (memberKey, provider, email). */
@@ -60,7 +95,9 @@ export interface MeetStore {
     expectedStartAt: string,
     startAt: string,
     endAt: string,
-    history: Booking["history"]
+    history: Booking["history"],
+    /** Defaults to [] for a normal move; compensation restores prior markers. */
+    remindersSent?: Booking["remindersSent"]
   ): Promise<InsertBookingResult>;
   /**
    * Conditional cancel: transitions confirmed -> cancelled and reports
@@ -77,6 +114,14 @@ export interface MeetStore {
   markReminderSent(id: string, kind: string): Promise<boolean>;
   /** Confirmed bookings overlapping [fromMs, toMs) — overlaid as busy time. */
   listConfirmedBookingsInRange(fromMs: number, toMs: number): Promise<Booking[]>;
+  /**
+   * Any future/in-progress confirmed booking naming this member or page.
+   * Every team booking names every active member because team calendar events
+   * and lifecycle emails invite/notify the full roster, even when only a
+   * quorum is recorded in attendeeMemberKeys. This also covers degraded legacy
+   * team rows whose attendee list is empty.
+   */
+  hasFutureConfirmedBookingForMember(memberKey: string, nowMs: number): Promise<boolean>;
   /**
    * Every booking starting inside [fromMs, toMs), cancelled ones included,
    * ascending by start. Admin-only listing: availability must keep using
@@ -97,6 +142,15 @@ interface AccountRow {
   refresh_token_enc: string;
   selected_calendars: CalendarAccount["selectedCalendars"];
   status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface MemberRow {
+  member_key: string;
+  name: string;
+  email: string;
+  archived_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -129,6 +183,9 @@ interface PageSettingsRow {
   enabled: boolean;
   headline: string | null;
   blurb: string | null;
+  timezone: string | null;
+  timezone_until_date: string | null;
+  timezone_until_zone: string | null;
   window_start_min: number | null;
   window_end_min: number | null;
   bookable_weekdays: number[] | null;
@@ -143,12 +200,31 @@ interface PageSettingsRow {
   updated_at: string;
 }
 
+function memberFromRow(row: MemberRow): MemberRecord {
+  return {
+    key: row.member_key,
+    name: row.name,
+    email: row.email,
+    archivedAt: row.archived_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
 function pageSettingsFromRow(r: PageSettingsRow): PageSettings {
   return {
     memberKey: r.member_key,
     enabled: r.enabled,
     headline: r.headline,
     blurb: r.blurb,
+    timezone: r.timezone ?? null,
+    timezoneUntil:
+      r.timezone_until_date && r.timezone_until_zone
+        ? {
+            beforeDate: r.timezone_until_date,
+            timezone: r.timezone_until_zone,
+          }
+        : null,
     windowStartMin: r.window_start_min,
     windowEndMin: r.window_end_min,
     bookableWeekdays: r.bookable_weekdays,
@@ -176,6 +252,11 @@ function pageSettingsPatchToRow(
   if (patch.enabled !== undefined) row.enabled = patch.enabled;
   if (patch.headline !== undefined) row.headline = patch.headline;
   if (patch.blurb !== undefined) row.blurb = patch.blurb;
+  if (patch.timezone !== undefined) row.timezone = patch.timezone;
+  if (patch.timezoneUntil !== undefined) {
+    row.timezone_until_date = patch.timezoneUntil?.beforeDate ?? null;
+    row.timezone_until_zone = patch.timezoneUntil?.timezone ?? null;
+  }
   if (patch.windowStartMin !== undefined) row.window_start_min = patch.windowStartMin;
   if (patch.windowEndMin !== undefined) row.window_end_min = patch.windowEndMin;
   if (patch.bookableWeekdays !== undefined) row.bookable_weekdays = patch.bookableWeekdays;
@@ -284,6 +365,171 @@ class SupabaseMeetStore implements MeetStore {
     this.client = createClient(url, key, {
       auth: { persistSession: false, autoRefreshToken: false },
     });
+  }
+
+  async listMemberRecords(): Promise<MemberRecord[]> {
+    const { data, error } = await this.client
+      .from("meet_members")
+      .select("*")
+      .order("created_at", { ascending: true });
+    if (error) throw new Error(`meet_members list failed: ${error.message}`);
+    return (data as MemberRow[]).map(memberFromRow);
+  }
+
+  async getMemberRecord(memberKey: string): Promise<MemberRecord | null> {
+    const { data, error } = await this.client
+      .from("meet_members")
+      .select("*")
+      .eq("member_key", memberKey)
+      .maybeSingle();
+    if (error) throw new Error(`meet_members get failed: ${error.message}`);
+    return data ? memberFromRow(data as MemberRow) : null;
+  }
+
+  private memberConflict(error: {
+    code?: string;
+    message: string;
+    details?: string | null;
+  }): MemberWriteResult | null {
+    if (error.code !== "23505") return null;
+    const detail = `${error.message} ${error.details ?? ""}`;
+    return {
+      ok: false,
+      reason: detail.includes("meet_members_email_lower")
+        ? "email_taken"
+        : "key_taken",
+    };
+  }
+
+  async insertMemberRecord(
+    member: Omit<MemberRecord, "createdAt" | "updatedAt">
+  ): Promise<MemberWriteResult> {
+    const { data, error } = await this.client
+      .from("meet_members")
+      .insert({
+        member_key: member.key,
+        name: member.name,
+        email: member.email,
+        archived_at: member.archivedAt,
+      })
+      .select()
+      .single();
+    if (error) {
+      const conflict = this.memberConflict(error);
+      if (conflict) return conflict;
+      throw new Error(`meet_members insert failed: ${error.message}`);
+    }
+    return { ok: true, member: memberFromRow(data as MemberRow) };
+  }
+
+  async ensureMemberRecord(
+    member: Omit<MemberRecord, "createdAt" | "updatedAt">
+  ): Promise<MemberWriteResult> {
+    const { error } = await this.client
+      .from("meet_members")
+      .upsert(
+        {
+          member_key: member.key,
+          name: member.name,
+          email: member.email,
+          archived_at: member.archivedAt,
+        },
+        { onConflict: "member_key", ignoreDuplicates: true }
+      );
+    if (error) {
+      const conflict = this.memberConflict(error);
+      if (conflict) return conflict;
+      throw new Error(`meet_members ensure failed: ${error.message}`);
+    }
+    const ensured = await this.getMemberRecord(member.key);
+    if (!ensured) {
+      throw new Error(`meet_members ensure failed: ${member.key} was not written`);
+    }
+    return { ok: true, member: ensured };
+  }
+
+  async upsertMemberRecord(
+    member: Omit<MemberRecord, "createdAt" | "updatedAt">
+  ): Promise<MemberWriteResult> {
+    const { data, error } = await this.client
+      .from("meet_members")
+      .upsert(
+        {
+          member_key: member.key,
+          name: member.name,
+          email: member.email,
+          archived_at: member.archivedAt,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "member_key" }
+      )
+      .select()
+      .single();
+    if (error) {
+      const conflict = this.memberConflict(error);
+      if (conflict) return conflict;
+      throw new Error(`meet_members upsert failed: ${error.message}`);
+    }
+    return { ok: true, member: memberFromRow(data as MemberRow) };
+  }
+
+  async updateMemberIdentity(
+    memberKey: string,
+    patch: Partial<Pick<MemberRecord, "name" | "email">>
+  ): Promise<MemberWriteResult> {
+    const row: Record<string, unknown> = { updated_at: new Date().toISOString() };
+    if (patch.name !== undefined) row.name = patch.name;
+    if (patch.email !== undefined) row.email = patch.email;
+    if (Object.keys(row).length === 1) {
+      const current = await this.getMemberRecord(memberKey);
+      if (!current) {
+        throw new Error(`meet_members identity update failed: unknown ${memberKey}`);
+      }
+      return { ok: true, member: current };
+    }
+    const { data, error } = await this.client
+      .from("meet_members")
+      .update(row)
+      .eq("member_key", memberKey)
+      .select()
+      .single();
+    if (error) {
+      const conflict = this.memberConflict(error);
+      if (conflict) return conflict;
+      throw new Error(`meet_members identity update failed: ${error.message}`);
+    }
+    return { ok: true, member: memberFromRow(data as MemberRow) };
+  }
+
+  async updateMemberArchivedAt(
+    memberKey: string,
+    archivedAt: string | null
+  ): Promise<MemberRecord> {
+    const { data, error } = await this.client
+      .from("meet_members")
+      .update({
+        archived_at: archivedAt,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("member_key", memberKey)
+      .select()
+      .single();
+    if (error) throw new Error(`meet_members archive update failed: ${error.message}`);
+    return memberFromRow(data as MemberRow);
+  }
+
+  async restoreMemberArchivedAt(
+    memberKey: string,
+    expectedArchivedAt: string
+  ): Promise<boolean> {
+    const { data, error } = await this.client
+      .from("meet_members")
+      .update({ archived_at: null, updated_at: new Date().toISOString() })
+      .eq("member_key", memberKey)
+      .eq("archived_at", expectedArchivedAt)
+      .select("member_key");
+    if (error) throw new Error(`meet_members archive restore failed: ${error.message}`);
+    return !!data && data.length > 0;
   }
 
   async listAccounts(): Promise<CalendarAccount[]> {
@@ -431,13 +677,14 @@ class SupabaseMeetStore implements MeetStore {
     expectedStartAt: string,
     startAt: string,
     endAt: string,
-    history: Booking["history"]
+    history: Booking["history"],
+    remindersSent: Booking["remindersSent"] = []
   ): Promise<InsertBookingResult> {
     // Status + expected start make this a compare-and-swap: a concurrent
     // cancel or reschedule that already won makes this update match zero rows.
     const { data, error } = await this.client
       .from("meet_bookings")
-      .update({ start_at: startAt, end_at: endAt, history, reminders_sent: [] })
+      .update({ start_at: startAt, end_at: endAt, history, reminders_sent: remindersSent })
       .eq("id", id)
       .eq("status", "confirmed")
       .eq("start_at", expectedStartAt)
@@ -508,6 +755,51 @@ class SupabaseMeetStore implements MeetStore {
     return (data as BookingRow[]).map(bookingFromRow);
   }
 
+  async hasFutureConfirmedBookingForMember(
+    memberKey: string,
+    nowMs: number
+  ): Promise<boolean> {
+    const now = new Date(nowMs).toISOString();
+    const [page, attendee, team] = await Promise.all([
+      this.client
+        .from("meet_bookings")
+        .select("id", { count: "exact", head: true })
+        .eq("status", "confirmed")
+        .gt("end_at", now)
+        .eq("page_key", memberKey),
+      this.client
+        .from("meet_bookings")
+        .select("id", { count: "exact", head: true })
+        .eq("status", "confirmed")
+        .gt("end_at", now)
+        .contains("attendee_member_keys", [memberKey]),
+      this.client
+        .from("meet_bookings")
+        .select("id", { count: "exact", head: true })
+        .eq("status", "confirmed")
+        .gt("end_at", now)
+        .eq("page_key", ""),
+    ]);
+    if (page.error) {
+      throw new Error(`meet_bookings member-page preflight failed: ${page.error.message}`);
+    }
+    if (attendee.error) {
+      throw new Error(
+        `meet_bookings member-attendee preflight failed: ${attendee.error.message}`
+      );
+    }
+    if (team.error) {
+      throw new Error(
+        `meet_bookings team preflight failed: ${team.error.message}`
+      );
+    }
+    return (
+      (page.count ?? 0) > 0 ||
+      (attendee.count ?? 0) > 0 ||
+      (team.count ?? 0) > 0
+    );
+  }
+
   async listBookingsStartingInRange(fromMs: number, toMs: number): Promise<Booking[]> {
     const { data, error } = await this.client
       .from("meet_bookings")
@@ -525,9 +817,117 @@ class SupabaseMeetStore implements MeetStore {
 /* ------------------------------------------------------------------ */
 
 export class MemoryMeetStore implements MeetStore {
+  memberRecords: MemberRecord[] = [];
   accounts: CalendarAccount[] = [];
   bookings: Booking[] = [];
   pageSettings: PageSettings[] = [];
+
+  async listMemberRecords(): Promise<MemberRecord[]> {
+    return this.memberRecords.map((member) => ({ ...member }));
+  }
+
+  async getMemberRecord(memberKey: string): Promise<MemberRecord | null> {
+    const found = this.memberRecords.find((member) => member.key === memberKey);
+    return found ? { ...found } : null;
+  }
+
+  async insertMemberRecord(
+    member: Omit<MemberRecord, "createdAt" | "updatedAt">
+  ): Promise<MemberWriteResult> {
+    if (this.memberRecords.some((row) => row.key === member.key)) {
+      return { ok: false, reason: "key_taken" };
+    }
+    if (
+      this.memberRecords.some(
+        (row) => row.email.toLowerCase() === member.email.toLowerCase()
+      )
+    ) {
+      return { ok: false, reason: "email_taken" };
+    }
+    const now = new Date().toISOString();
+    const created: MemberRecord = { ...member, createdAt: now, updatedAt: now };
+    this.memberRecords.push(created);
+    return { ok: true, member: { ...created } };
+  }
+
+  async ensureMemberRecord(
+    member: Omit<MemberRecord, "createdAt" | "updatedAt">
+  ): Promise<MemberWriteResult> {
+    const existing = this.memberRecords.find((row) => row.key === member.key);
+    if (existing) return { ok: true, member: { ...existing } };
+    return this.insertMemberRecord(member);
+  }
+
+  async upsertMemberRecord(
+    member: Omit<MemberRecord, "createdAt" | "updatedAt">
+  ): Promise<MemberWriteResult> {
+    if (
+      this.memberRecords.some(
+        (row) =>
+          row.key !== member.key &&
+          row.email.toLowerCase() === member.email.toLowerCase()
+      )
+    ) {
+      return { ok: false, reason: "email_taken" };
+    }
+    const now = new Date().toISOString();
+    const existing = this.memberRecords.find((row) => row.key === member.key);
+    if (existing) {
+      Object.assign(existing, member, { updatedAt: now });
+      return { ok: true, member: { ...existing } };
+    }
+    const created: MemberRecord = { ...member, createdAt: now, updatedAt: now };
+    this.memberRecords.push(created);
+    return { ok: true, member: { ...created } };
+  }
+
+  async updateMemberIdentity(
+    memberKey: string,
+    patch: Partial<Pick<MemberRecord, "name" | "email">>
+  ): Promise<MemberWriteResult> {
+    const existing = this.memberRecords.find((row) => row.key === memberKey);
+    if (!existing) {
+      throw new Error(`meet_members identity update failed: unknown ${memberKey}`);
+    }
+    if (
+      patch.email !== undefined &&
+      this.memberRecords.some(
+        (row) =>
+          row.key !== memberKey &&
+          row.email.toLowerCase() === patch.email?.toLowerCase()
+      )
+    ) {
+      return { ok: false, reason: "email_taken" };
+    }
+    if (patch.name !== undefined) existing.name = patch.name;
+    if (patch.email !== undefined) existing.email = patch.email;
+    existing.updatedAt = new Date().toISOString();
+    return { ok: true, member: { ...existing } };
+  }
+
+  async updateMemberArchivedAt(
+    memberKey: string,
+    archivedAt: string | null
+  ): Promise<MemberRecord> {
+    const existing = this.memberRecords.find((row) => row.key === memberKey);
+    if (!existing) {
+      throw new Error(`meet_members archive update failed: unknown ${memberKey}`);
+    }
+    existing.archivedAt = archivedAt;
+    existing.updatedAt = new Date().toISOString();
+    return { ...existing };
+  }
+
+  async restoreMemberArchivedAt(
+    memberKey: string,
+    expectedArchivedAt: string
+  ): Promise<boolean> {
+    const existing = this.memberRecords.find((row) => row.key === memberKey);
+    if (!existing || existing.archivedAt !== expectedArchivedAt) return false;
+    existing.archivedAt = null;
+    existing.updatedAt = new Date().toISOString();
+    return true;
+  }
 
   async listAccounts(): Promise<CalendarAccount[]> {
     return [...this.accounts];
@@ -602,6 +1002,8 @@ export class MemoryMeetStore implements MeetStore {
       enabled: true,
       headline: null,
       blurb: null,
+      timezone: null,
+      timezoneUntil: null,
       windowStartMin: null,
       windowEndMin: null,
       bookableWeekdays: null,
@@ -649,7 +1051,8 @@ export class MemoryMeetStore implements MeetStore {
     expectedStartAt: string,
     startAt: string,
     endAt: string,
-    history: Booking["history"]
+    history: Booking["history"],
+    remindersSent: Booking["remindersSent"] = []
   ): Promise<InsertBookingResult> {
     const booking = this.bookings.find((b) => b.id === id);
     if (!booking || booking.status !== "confirmed") {
@@ -669,7 +1072,7 @@ export class MemoryMeetStore implements MeetStore {
     booking.startAt = startAt;
     booking.endAt = endAt;
     booking.history = history;
-    booking.remindersSent = [];
+    booking.remindersSent = [...remindersSent];
     return { ok: true };
   }
 
@@ -695,6 +1098,20 @@ export class MemoryMeetStore implements MeetStore {
         b.status === "confirmed" &&
         Date.parse(b.startAt) < toMs &&
         Date.parse(b.endAt) > fromMs
+    );
+  }
+
+  async hasFutureConfirmedBookingForMember(
+    memberKey: string,
+    nowMs: number
+  ): Promise<boolean> {
+    return this.bookings.some(
+      (booking) =>
+        booking.status === "confirmed" &&
+        Date.parse(booking.endAt) > nowMs &&
+        (booking.pageKey === memberKey ||
+          booking.attendeeMemberKeys.includes(memberKey) ||
+          booking.pageKey === "")
     );
   }
 

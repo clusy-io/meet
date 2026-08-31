@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { requireAdmin } from "@/lib/meet/admin";
+import { invalidateAvailabilityCache } from "@/lib/meet/availability";
 import { getMeetConfig } from "@/lib/meet/config";
 import { encryptSecret } from "@/lib/meet/crypto";
 import { ensureMockReady } from "@/lib/meet/mock";
+import { getEffectiveMeetConfig } from "@/lib/meet/members";
 import { hasTrustedMutationOrigin } from "@/lib/meet/requestSecurity";
 import { getMeetStore } from "@/lib/meet/store";
-import { parseClockToMinutes } from "@/lib/meet/tz";
+import { isValidTimezone, parseCivilDate, parseClockToMinutes } from "@/lib/meet/tz";
 import type { PageSettings } from "@/lib/meet/types";
 
 export const runtime = "nodejs";
@@ -24,6 +26,14 @@ const patchSchema = z.object({
   enabled: z.boolean().optional(),
   headline: z.string().trim().max(80).nullable().optional(),
   blurb: z.string().trim().max(200).nullable().optional(),
+  timezone: z.string().trim().max(64).nullable().optional(),
+  timezoneUntil: z
+    .object({
+      beforeDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, "beforeDate must be YYYY-MM-DD"),
+      timezone: z.string().trim().min(1).max(64),
+    })
+    .nullable()
+    .optional(),
   windowStart: z.string().max(5).nullable().optional(),
   windowEnd: z.string().max(5).nullable().optional(),
   bookableWeekdays: z.array(z.number().int().min(1).max(7)).min(1).max(7).nullable().optional(),
@@ -84,7 +94,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
   }
 
   const { memberKey } = await params;
-  const config = getMeetConfig();
+  const config = await getEffectiveMeetConfig();
   // The segment is attacker-supplied: without this the upsert would happily
   // create settings rows for members who do not exist.
   if (!config.members.some((m) => m.key === memberKey)) {
@@ -116,6 +126,35 @@ export async function PATCH(request: Request, { params }: RouteContext) {
   if (body.horizonDays !== undefined) patch.horizonDays = body.horizonDays;
   if (body.eventTitle !== undefined) patch.eventTitle = body.eventTitle || null;
   if (body.eventDescription !== undefined) patch.eventDescription = body.eventDescription || null;
+
+  if (body.timezoneUntil !== undefined) {
+    if (body.timezoneUntil === null) {
+      patch.timezoneUntil = null;
+    } else if (
+      parseCivilDate(body.timezoneUntil.beforeDate) === null ||
+      !isValidTimezone(body.timezoneUntil.timezone)
+    ) {
+      return NextResponse.json(
+        { message: "The timezone change needs a real date (YYYY-MM-DD) and an IANA zone." },
+        { status: 400 }
+      );
+    } else {
+      patch.timezoneUntil = body.timezoneUntil;
+    }
+  }
+
+  if (body.timezone !== undefined) {
+    if (body.timezone === null || body.timezone === "") {
+      patch.timezone = null;
+    } else if (!isValidTimezone(body.timezone)) {
+      return NextResponse.json(
+        { message: "That is not an IANA timezone (e.g. Europe/London or Asia/Baku)." },
+        { status: 400 }
+      );
+    } else {
+      patch.timezone = body.timezone;
+    }
+  }
 
   for (const [field, raw] of [
     ["windowStartMin", body.windowStart],
@@ -204,5 +243,6 @@ export async function PATCH(request: Request, { params }: RouteContext) {
   }
 
   await store.upsertPageSettings(memberKey, patch);
+  invalidateAvailabilityCache();
   return NextResponse.json({ ok: true });
 }

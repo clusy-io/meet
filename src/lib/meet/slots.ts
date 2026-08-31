@@ -1,7 +1,13 @@
 import type { MeetConfig } from "./config";
 import type { BusyInterval } from "./types";
 import { overlapsBusy } from "./types";
-import { addCivilDays, utcToWall, wallToUtcMs } from "./tz";
+import {
+  addCivilDays,
+  civilDayNumber,
+  parseCivilDate,
+  utcToWall,
+  wallToUtcMs,
+} from "./tz";
 
 /**
  * clusy/meet — pure slot arithmetic.
@@ -14,6 +20,30 @@ export interface SlotCandidate {
   /** UTC epoch ms of the slot start. */
   startMs: number;
   endMs: number;
+}
+
+/** All zones that can evaluate a civil day for this config. */
+export function transitionZones(config: MeetConfig): string[] {
+  const zones = [config.hostTimezone];
+  if (config.timezoneUntil?.timezone && !zones.includes(config.timezoneUntil.timezone)) {
+    zones.push(config.timezoneUntil.timezone);
+  }
+  return zones;
+}
+
+/** Zone whose working hours govern this civil date. */
+export function zoneForCivilDay(
+  config: MeetConfig,
+  day: { year: number; month: number; day: number }
+): string {
+  const handover = config.timezoneUntil;
+  if (!handover) return config.hostTimezone;
+  const before = parseCivilDate(handover.beforeDate);
+  if (!before) return config.hostTimezone;
+  return civilDayNumber(day.year, day.month, day.day) <
+    civilDayNumber(before.year, before.month, before.day)
+    ? handover.timezone
+    : config.hostTimezone;
 }
 
 /**
@@ -31,10 +61,11 @@ export function candidateSlots(
   const durMs = config.durationMinutes * 60_000;
   for (let i = 0; i < days; i++) {
     const d = addCivilDays(from.year, from.month, from.day, i);
+    const zone = zoneForCivilDay(config, d);
     // Weekday of this civil date, derived in the host zone via noon UTC of
     // the date (noon avoids any midnight-offset ambiguity).
-    const noonUtc = wallToUtcMs(config.hostTimezone, d.year, d.month, d.day, 12, 0);
-    const weekday = utcToWall(config.hostTimezone, noonUtc).weekday;
+    const noonUtc = wallToUtcMs(zone, d.year, d.month, d.day, 12, 0);
+    const weekday = utcToWall(zone, noonUtc).weekday;
     if (!config.bookableWeekdays.includes(weekday)) continue;
     for (
       let min = config.windowStartMin;
@@ -42,7 +73,7 @@ export function candidateSlots(
       min += config.slotStepMinutes
     ) {
       const startMs = wallToUtcMs(
-        config.hostTimezone,
+        zone,
         d.year,
         d.month,
         d.day,
@@ -53,6 +84,21 @@ export function candidateSlots(
     }
   }
   return out;
+}
+
+/** True when an instant is one of this config's candidate slot starts. */
+export function slotOnGrid(config: MeetConfig, startMs: number): boolean {
+  for (const zone of transitionZones(config)) {
+    const wall = utcToWall(zone, startMs);
+    if (
+      candidateSlots(config, { year: wall.year, month: wall.month, day: wall.day }, 1).some(
+        (candidate) => candidate.startMs === startMs
+      )
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -73,11 +119,15 @@ export function availableSlots(
   candidates: SlotCandidate[],
   memberBusy: Map<string, BusyInterval[]>,
   nowMs: number,
-  quorum: number = config.quorum
+  quorum: number = config.quorum,
+  /** Optional per-member starts allowed by their own zone/hours/weekdays. */
+  memberSlotSets?: Map<string, ReadonlySet<number>>
 ): Array<{ startMs: number; freeMemberKeys: string[] }> {
   const minStartMs = nowMs + config.minNoticeMinutes * 60_000;
   // Horizon: last bookable civil day in host tz is today + horizonDays.
-  const nowWall = utcToWall(config.hostTimezone, nowMs);
+  let nowWall = utcToWall(config.hostTimezone, nowMs);
+  const todayZone = zoneForCivilDay(config, nowWall);
+  if (todayZone !== config.hostTimezone) nowWall = utcToWall(todayZone, nowMs);
   const horizonEdge = addCivilDays(
     nowWall.year,
     nowWall.month,
@@ -85,7 +135,7 @@ export function availableSlots(
     config.horizonDays + 1
   );
   const horizonMs = wallToUtcMs(
-    config.hostTimezone,
+    zoneForCivilDay(config, horizonEdge),
     horizonEdge.year,
     horizonEdge.month,
     horizonEdge.day,
@@ -99,7 +149,13 @@ export function availableSlots(
     if (slot.startMs >= horizonMs) continue;
     const free: string[] = [];
     for (const [memberKey, busy] of memberBusy) {
-      if (!overlapsBusy(busy, slot.startMs, slot.endMs)) free.push(memberKey);
+      const allowed = memberSlotSets?.get(memberKey);
+      if (
+        (allowed === undefined || allowed.has(slot.startMs)) &&
+        !overlapsBusy(busy, slot.startMs, slot.endMs)
+      ) {
+        free.push(memberKey);
+      }
     }
     if (free.length >= quorum) {
       out.push({ startMs: slot.startMs, freeMemberKeys: free });

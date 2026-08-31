@@ -47,10 +47,14 @@ const mocks = vi.hoisted(() => ({
   },
   getBusy: vi.fn(),
   listAccounts: vi.fn(),
+  listPageSettings: vi.fn(),
   listConfirmedBookingsInRange: vi.fn(),
 }));
 
 vi.mock("@/lib/meet/config", () => ({ getMeetConfig: () => mocks.config }));
+vi.mock("@/lib/meet/members", () => ({
+  getRuntimeMeetConfig: async () => mocks.config,
+}));
 vi.mock("@/lib/meet/crypto", () => ({ decryptSecret: (v: string) => v }));
 vi.mock("@/lib/meet/providers", () => ({
   getProvider: () => ({ getBusy: mocks.getBusy }),
@@ -58,6 +62,7 @@ vi.mock("@/lib/meet/providers", () => ({
 vi.mock("@/lib/meet/store", () => ({
   getMeetStore: () => ({
     listAccounts: mocks.listAccounts,
+    listPageSettings: mocks.listPageSettings,
     listConfirmedBookingsInRange: mocks.listConfirmedBookingsInRange,
   }),
 }));
@@ -80,6 +85,8 @@ beforeEach(() => {
   mocks.getBusy.mockResolvedValue([] as BusyInterval[]);
   mocks.listConfirmedBookingsInRange.mockReset();
   mocks.listConfirmedBookingsInRange.mockResolvedValue([]);
+  mocks.listPageSettings.mockReset();
+  mocks.listPageSettings.mockResolvedValue([]);
   mocks.listAccounts.mockReset();
   mocks.listAccounts.mockResolvedValue(
     mocks.config.members.map((m, i) => ({
@@ -121,6 +128,67 @@ describe("canonical window keying", () => {
     // today 00:00 UTC .. today+22 00:00 UTC (horizonDays + 1), NOT today+1.
     expect(w.fromMs).toBe(Date.parse("2026-08-17T00:00:00.000Z"));
     expect(w.toMs).toBe(Date.parse("2026-09-08T00:00:00.000Z"));
+  });
+
+  it("fetches the union of every active member timezone, not only the team zone", async () => {
+    mocks.listPageSettings.mockResolvedValue([
+      {
+        memberKey: "one",
+        enabled: true,
+        headline: null,
+        blurb: null,
+        timezone: "Asia/Baku",
+        timezoneUntil: null,
+        windowStartMin: null,
+        windowEndMin: null,
+        bookableWeekdays: null,
+        durationMinutes: null,
+        slotStepMinutes: null,
+        minNoticeMinutes: null,
+        horizonDays: null,
+        eventTitle: null,
+        eventDescription: null,
+        slackWebhookEnc: null,
+        createdAt: "2026-08-12T00:00:00.000Z",
+        updatedAt: "2026-08-12T00:00:00.000Z",
+      },
+    ]);
+
+    await computeAvailability("2026-08-17", 1);
+    const [window] = requestedWindows();
+    // Baku's midnight begins the canonical range four hours before UTC's.
+    expect(window.fromMs).toBe(Date.parse("2026-08-16T20:00:00.000Z"));
+    expect(window.toMs).toBe(Date.parse("2026-09-08T00:00:00.000Z"));
+  });
+
+  it("counts a free member only inside that member's local hours", async () => {
+    mocks.listPageSettings.mockResolvedValue([
+      {
+        memberKey: "one",
+        enabled: true,
+        headline: null,
+        blurb: null,
+        timezone: "Asia/Baku",
+        timezoneUntil: null,
+        windowStartMin: 9 * 60,
+        windowEndMin: 17 * 60,
+        bookableWeekdays: null,
+        durationMinutes: null,
+        slotStepMinutes: null,
+        minNoticeMinutes: null,
+        horizonDays: null,
+        eventTitle: null,
+        eventDescription: null,
+        slackWebhookEnc: null,
+        createdAt: "2026-08-12T00:00:00.000Z",
+        updatedAt: "2026-08-12T00:00:00.000Z",
+      },
+    ]);
+
+    const result = await computeAvailability("2026-08-18", 1);
+    // Quorum two: Baku 09:00-17:00 overlaps UTC 09:00-17:00 only here.
+    expect(result.slots[0]).toBe("2026-08-18T09:00:00.000Z");
+    expect(result.slots[result.slots.length - 1]).toBe("2026-08-18T12:30:00.000Z");
   });
 
   it("still returns only the days the caller asked for", async () => {
@@ -199,10 +267,9 @@ describe("the bookings read does not wait for the providers", () => {
     });
 
     const pending = computeAvailability("2026-08-17", 23);
-    // Let both legs get going, then prove the bookings read already started
-    // even though the providers have not returned.
-    await Promise.resolve();
-    await Promise.resolve();
+    // Let runtime-roster and per-member-window reads resolve, then prove the
+    // bookings read starts before the provider leg returns.
+    for (let i = 0; i < 6; i++) await Promise.resolve();
     expect(order).toContain("bookings:start");
     expect(order).not.toContain("providers:end");
 

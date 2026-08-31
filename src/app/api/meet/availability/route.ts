@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { computeAvailability } from "@/lib/meet/availability";
-import { getMeetConfig } from "@/lib/meet/config";
+import { getRuntimeMeetConfig } from "@/lib/meet/members";
 import { getPage } from "@/lib/meet/pages";
 import { rateLimit } from "@/lib/meet/ratelimit";
 import { getMeetStore } from "@/lib/meet/store";
@@ -50,7 +50,7 @@ export async function GET(request: Request) {
     );
   }
 
-  const config = getMeetConfig();
+  const config = await getRuntimeMeetConfig();
 
   // A personal page books one person against their own calendar, on their own
   // window/duration. An unknown or disabled slug is a 404, not an empty slot

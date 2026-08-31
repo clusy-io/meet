@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/meet/admin";
-import { getMeetConfig } from "@/lib/meet/config";
 import { ensureMockReady } from "@/lib/meet/mock";
+import { getEffectiveMeetConfig } from "@/lib/meet/members";
 import { getMeetStore } from "@/lib/meet/store";
 
 export const runtime = "nodejs";
@@ -16,9 +16,10 @@ export async function GET(request: Request) {
   if (!requireAdmin(request)) {
     return NextResponse.json({ message: "unauthorized" }, { status: 401 });
   }
-  const config = getMeetConfig();
+  const config = await getEffectiveMeetConfig();
   if (config.mockMode) await ensureMockReady();
   const accounts = await getMeetStore().listAccounts();
+  const activeMemberKeys = new Set(config.members.map((member) => member.key));
   return NextResponse.json({
     members: config.members,
     quorum: config.quorum,
@@ -30,7 +31,7 @@ export async function GET(request: Request) {
       end: minutesToClock(config.windowEndMin),
     },
     // Refresh-token ciphertext never leaves the server, even encrypted.
-    accounts: accounts.map((a) => ({
+    accounts: accounts.filter((a) => activeMemberKeys.has(a.memberKey)).map((a) => ({
       id: a.id,
       memberKey: a.memberKey,
       provider: a.provider,
