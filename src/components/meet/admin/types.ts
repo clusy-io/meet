@@ -144,4 +144,47 @@ export interface PersonalPagesResponse {
   }>;
 }
 
-export type AdminWorkspaceView = "schedule" | "members" | "calendars";
+export interface AdminBusyInterval {
+  startAt: string;
+  endAt: string;
+}
+
+export interface TeamAvailabilityMember {
+  key: string;
+  name: string;
+  /** Unavailable is fail-closed: the calendar could not be read reliably. */
+  status: "ready" | "unavailable";
+  busy: AdminBusyInterval[];
+  /** Absolute intervals when this member's configured team window is open. */
+  working: AdminBusyInterval[];
+  /** Absolute team-grid starts allowed by this member's own hours and zone. */
+  eligibleStarts: string[];
+}
+
+export interface TeamAvailabilityServerSlot {
+  startAt: string;
+  endAt: string;
+  freeMemberKeys: string[];
+}
+
+export interface TeamAvailabilityResponse {
+  hostTimezone: string;
+  generatedAt: string;
+  /** Civil-date bounds in hostTimezone; `to` is exclusive. */
+  range: { from: string; to: string };
+  /** Display bounds in hostTimezone, expanded for member-specific hours. */
+  window: { start: string; end: string };
+  durationMinutes: number;
+  slotStepMinutes: number;
+  minNoticeMinutes: number;
+  quorum: number;
+  bookableWeekdays: number[];
+  /** Host-timezone dates with at least one eligible member start. */
+  bookableDates: string[];
+  members: TeamAvailabilityMember[];
+  /** Server-authoritative team starts after notice, horizon, busy and quorum rules. */
+  slots: TeamAvailabilityServerSlot[];
+}
+
+export type AdminWorkspaceView =
+  "schedule" | "availability" | "members" | "calendars";

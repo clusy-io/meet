@@ -15,6 +15,7 @@ import ThemeToggle from "@/components/ThemeToggle";
 import { BookingPagesView } from "./admin/BookingPagesView";
 import { CalendarConnectionsView } from "./admin/CalendarConnectionsView";
 import { ScheduleView } from "./admin/ScheduleView";
+import { TeamAvailabilityView } from "./admin/TeamAvailabilityView";
 import type { AdminOverview, AdminWorkspaceView } from "./admin/types";
 
 type Phase = "loading" | "unauthed" | "ready" | "failed";
@@ -42,6 +43,11 @@ const NAV_ITEMS: Array<{
     description: "Upcoming calls and history",
   },
   {
+    id: "availability",
+    label: "Availability",
+    description: "Compare everyone's calendar",
+  },
+  {
     id: "members",
     label: "Members",
     description: "People, booking rules and pages",
@@ -56,7 +62,11 @@ const NAV_ITEMS: Array<{
 function viewFromHash(hash: string): AdminWorkspaceView {
   const value = hash.replace(/^#/, "");
   if (value === "pages") return "members";
-  return value === "members" || value === "calendars" ? value : "schedule";
+  return value === "availability" ||
+    value === "members" ||
+    value === "calendars"
+    ? value
+    : "schedule";
 }
 
 export function AdminPanel() {
@@ -314,6 +324,13 @@ export function AdminPanel() {
           <ScheduleView
             onUnauthorized={handleUnauthorized}
             rosterRevision={rosterRevision}
+          />
+        </div>
+        <div hidden={activeView !== "availability"}>
+          <TeamAvailabilityView
+            active={activeView === "availability"}
+            hostTimezone={overview.hostTimezone}
+            onUnauthorized={handleUnauthorized}
           />
         </div>
         <div hidden={activeView !== "members"}>
