@@ -42,7 +42,8 @@ that does not change size.
 
 **A private scheduling workspace** with a next-up view, date-grouped agenda,
 search and filters, expandable reschedule history, calendar health, per-member
-busy-calendar controls, and a live-preview editor for every personal page.
+busy-calendar controls, a privacy-safe weekly team timeline that ranks the
+best shared windows, and a live-preview editor for every personal page.
 
 **Accessible, responsive UI** with keyboard focus management, reduced-motion
 support, dark mode, and stable loading geometry.
@@ -68,6 +69,23 @@ Open [http://localhost:3000](http://localhost:3000). The example environment
 sets `MEET_MOCK_MODE=1`, so no database, OAuth client, or email account is
 needed. The admin console is at
 [http://localhost:3000/admin](http://localhost:3000/admin), open in mock mode.
+
+---
+
+## See the whole team’s week at a glance
+
+The authenticated **Availability** tab lays every active host’s busy time over
+their own timezone, working hours, weekdays and scheduled timezone handover,
+then ranks the best quorum-wide windows.
+
+<p align="center">
+  <img src="docs/media/team-availability.gif" alt="The admin Availability tab showing a seven-day team timeline, each host’s private busy blocks, and the best shared meeting windows" width="900">
+</p>
+
+The timeline uses the same server-authoritative slots as booking, refreshes
+live, and fails closed when a calendar cannot be read. Only busy intervals
+cross the API boundary—never event titles, guests, account addresses, calendar
+names or provider metadata.
 
 ---
 
@@ -155,7 +173,7 @@ visitor  -> availability API -> Google / Microsoft free-busy
          -> booking API      -> Postgres booking + provider event + Resend + Slack
          -> /manage/[token]  -> reschedule or cancel
 
-operator -> /admin -> OAuth connection, busy calendars, personal page settings
+operator -> /admin -> schedule, team availability, roster/pages, calendar connections
 cron     -> /api/meet/cron/reminders -> 24-hour / 1-hour email
 ```
 
@@ -233,6 +251,7 @@ so the admin console can change them without a deploy.
 | `/admin` | Secret-gated operator console |
 | `/api/meet/availability` | Public availability, optionally `?host=<member key>` |
 | `/api/meet/bookings` | Booking lifecycle APIs |
+| `/api/meet/admin/availability` | Authenticated privacy-safe team timeline and shared slots |
 | `/api/meet/admin/pages` | Personal page settings |
 | `/api/meet/admin/members` | Runtime roster additions, edits, archive and restore |
 | `/api/meet/oauth/*` | Google and Microsoft connection flow |
@@ -255,8 +274,9 @@ npm run check
 ```
 
 The suite covers timezone maths, intervals, slot generation, configuration,
-encryption, storage concurrency, per-page slot isolation, request origin checks,
-email routing, reminders, Slack payloads and delivery classification, Microsoft
+encryption, storage concurrency, per-page slot isolation, admin availability
+authentication and cross-timezone timeline maths, request origin checks, email
+routing, reminders, Slack payloads and delivery classification, Microsoft
 provider behaviour, provider fallback, and stale reschedule rejection.
 
 Some behaviour a unit test cannot see. The booking page's time column has four

@@ -1575,10 +1575,7 @@ function PageListCard({
           aria-hidden
         />
       )}
-      <div className="flex items-start gap-3">
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-hairline font-serif-display text-xs text-ink">
-          {page.memberName.trim().charAt(0).toUpperCase() || "?"}
-        </div>
+      <div className="flex items-start">
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2 pr-2">
             <p className="truncate text-sm font-semibold text-ink">
@@ -1607,7 +1604,7 @@ function PageListCard({
         </div>
       </div>
 
-      <div className="mt-3 flex items-center gap-1.5 pl-11 pr-1">
+      <div className="mt-3 flex items-center gap-1.5 pr-1">
         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-mute">
           {urlPath(page.url)}
         </span>
@@ -1639,7 +1636,7 @@ function PageListCard({
         disabled={selectionDisabled}
         onClick={onSelect}
         aria-pressed={selected}
-        className={`${FOCUS_RING} mt-2 flex w-full items-center justify-between py-1 pl-11 pr-2 text-xs font-medium transition-colors disabled:cursor-wait disabled:opacity-50 ${selected ? "text-accent" : "text-ink-mute hover:text-ink"}`}
+        className={`${FOCUS_RING} mt-2 flex w-full items-center justify-between py-1 pr-2 text-xs font-medium transition-colors disabled:cursor-wait disabled:opacity-50 ${selected ? "text-accent" : "text-ink-mute hover:text-ink"}`}
       >
         {selected ? "Editing member" : "Edit member"}
         <ChevronRight
@@ -3181,10 +3178,7 @@ function BookingPagePreview({
           <span className="h-5 w-5 rounded-full border border-hairline bg-paper" />
         </div>
         <div className="px-4 pb-5 pt-6 text-center">
-          <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-full border border-hairline bg-paper font-serif-display text-base text-ink">
-            {page.memberName.trim().charAt(0).toUpperCase() || "?"}
-          </div>
-          <p className="mx-auto mt-3 max-w-[17rem] font-serif-display text-xl font-bold leading-tight tracking-tight text-ink">
+          <p className="mx-auto max-w-[17rem] font-serif-display text-xl font-bold leading-tight tracking-tight text-ink">
             {preview.headline}
           </p>
           {preview.blurb && (

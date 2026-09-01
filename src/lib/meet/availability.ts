@@ -2,17 +2,18 @@ import "server-only";
 import { getMeetConfig, type MeetConfig } from "./config";
 import { decryptSecret } from "./crypto";
 import { ensureMockReady } from "./mock";
-import { getRuntimeMeetConfig } from "./members";
+import { getEffectiveMeetConfig, getRuntimeMeetConfig } from "./members";
 import { teamMemberWindows } from "./pages";
 import { getProvider } from "./providers";
 import {
   availableSlots,
   candidateSlots,
   transitionZones,
+  zoneForCivilDay,
   type SlotCandidate,
 } from "./slots";
 import { getMeetStore } from "./store";
-import { addCivilDays, formatCivilDate, parseCivilDate, utcToWall, wallToUtcMs } from "./tz";
+import { addCivilDays, formatCivilDate, minutesToClock, parseCivilDate, utcToWall, wallToUtcMs } from "./tz";
 import {
   mergeBusy,
   overlapsBusy,
@@ -242,6 +243,200 @@ function busyCache(): Map<string, BusyCacheEntry> {
  */
 export function invalidateAvailabilityCache(): void {
   busyCache().clear();
+}
+
+export interface MemberBusyTimeline {
+  hostTimezone: string;
+  generatedAt: string;
+  range: { from: string; to: string };
+  window: { start: string; end: string };
+  durationMinutes: number;
+  slotStepMinutes: number;
+  minNoticeMinutes: number;
+  quorum: number;
+  bookableWeekdays: number[];
+  bookableDates: string[];
+  members: Array<{
+    key: string;
+    name: string;
+    status: "ready" | "unavailable";
+    busy: Array<{ startAt: string; endAt: string }>;
+    working: Array<{ startAt: string; endAt: string }>;
+    eligibleStarts: string[];
+  }>;
+  slots: Array<{
+    startAt: string;
+    endAt: string;
+    freeMemberKeys: string[];
+  }>;
+}
+
+export const MEMBER_BUSY_TIMELINE_MAX_DAYS = 14;
+const MEMBER_GRID_CIVIL_PADDING_DAYS = 2;
+
+function realCivilDate(value: string): { year: number; month: number; day: number } | null {
+  const civil = parseCivilDate(value);
+  if (!civil || civil.year < 1000 || civil.year > 9999) return null;
+  const probe = new Date(Date.UTC(civil.year, civil.month - 1, civil.day));
+  return probe.getUTCFullYear() === civil.year &&
+    probe.getUTCMonth() + 1 === civil.month &&
+    probe.getUTCDate() === civil.day
+    ? civil
+    : null;
+}
+
+function wallDateKey(wall: { year: number; month: number; day: number }): string {
+  return formatCivilDate(wall.year, wall.month, wall.day);
+}
+
+function memberWorkingIntervals(
+  config: MeetConfig,
+  paddedFrom: { year: number; month: number; day: number },
+  paddedDays: number,
+  fromMs: number,
+  toMs: number
+): BusyInterval[] {
+  const intervals: BusyInterval[] = [];
+  for (let index = 0; index < paddedDays; index += 1) {
+    const civil = addCivilDays(paddedFrom.year, paddedFrom.month, paddedFrom.day, index);
+    const zone = zoneForCivilDay(config, civil);
+    const noonMs = wallToUtcMs(zone, civil.year, civil.month, civil.day, 12, 0);
+    if (!config.bookableWeekdays.includes(utcToWall(zone, noonMs).weekday)) continue;
+    const startMs = wallToUtcMs(
+      zone, civil.year, civil.month, civil.day,
+      Math.floor(config.windowStartMin / 60), config.windowStartMin % 60
+    );
+    const endMs = wallToUtcMs(
+      zone, civil.year, civil.month, civil.day,
+      Math.floor(config.windowEndMin / 60), config.windowEndMin % 60
+    );
+    const clipped = { startMs: Math.max(startMs, fromMs), endMs: Math.min(endMs, toMs) };
+    if (clipped.endMs > clipped.startMs) intervals.push(clipped);
+  }
+  return mergeBusy(intervals);
+}
+
+/** Privacy-safe admin timeline using the recoverable roster and member grids. */
+export async function computeMemberBusyTimeline(
+  from: string,
+  requestedDays: number
+): Promise<MemberBusyTimeline> {
+  if (!Number.isSafeInteger(requestedDays) || requestedDays < 1) {
+    throw new Error("meet: timeline days must be a positive integer");
+  }
+  const fromCivil = realCivilDate(from);
+  if (!fromCivil) throw new Error(`meet: timeline from must be a real YYYY-MM-DD date: "${from}"`);
+  const days = Math.min(requestedDays, MEMBER_BUSY_TIMELINE_MAX_DAYS);
+  const toCivil = addCivilDays(fromCivil.year, fromCivil.month, fromCivil.day, days);
+  const to = formatCivilDate(toCivil.year, toCivil.month, toCivil.day);
+
+  // Admin recovery must keep working while the roster is temporarily below quorum.
+  const config = await getEffectiveMeetConfig();
+  const fromMs = wallToUtcMs(config.hostTimezone, fromCivil.year, fromCivil.month, fromCivil.day, 0, 0);
+  const toMs = wallToUtcMs(config.hostTimezone, toCivil.year, toCivil.month, toCivil.day, 0, 0);
+  if (config.mockMode) await ensureMockReady();
+
+  const windowsPromise = teamMemberWindows(config);
+  const bookingsPromise = getMeetStore().listConfirmedBookingsInRange(fromMs, toMs);
+  bookingsPromise.catch(() => {});
+  const [windows, providerBusy] = await Promise.all([
+    windowsPromise,
+    providerBusyByMember(config, fromMs, toMs),
+  ]);
+  const busyByMember = await withBookingsOverlay(providerBusy, fromMs, toMs, bookingsPromise);
+  const paddedFrom = addCivilDays(
+    fromCivil.year,
+    fromCivil.month,
+    fromCivil.day,
+    -MEMBER_GRID_CIVIL_PADDING_DAYS
+  );
+  const paddedDays = days + MEMBER_GRID_CIVIL_PADDING_DAYS * 2;
+  let windowStart = config.windowStartMin;
+  let windowEnd = config.windowEndMin;
+  const bookableDates = new Set<string>();
+  const memberSlotSets = new Map<string, Set<number>>();
+  const candidatesByStart = new Map<number, SlotCandidate>();
+
+  const members: MemberBusyTimeline["members"] = config.members.map((member) => {
+    const rawBusy = busyByMember.get(member.key);
+    const memberConfig = windows.get(member.key);
+    const working = memberConfig
+      ? memberWorkingIntervals(memberConfig, paddedFrom, paddedDays, fromMs, toMs).map((iv) => ({
+          startAt: new Date(iv.startMs).toISOString(),
+          endAt: new Date(iv.endMs).toISOString(),
+        }))
+      : [];
+    if (!rawBusy || !memberConfig || rawBusy.some((iv) => !Number.isFinite(iv.startMs) || !Number.isFinite(iv.endMs))) {
+      memberSlotSets.set(member.key, new Set());
+      return { key: member.key, name: member.name, status: "unavailable", busy: [], working, eligibleStarts: [] };
+    }
+    const candidates = candidateSlots(memberConfig, paddedFrom, paddedDays).filter(
+      (candidate) => candidate.startMs >= fromMs && candidate.startMs < toMs
+    );
+    const eligibleStarts = [...new Set(candidates.map((candidate) => candidate.startMs))]
+      .sort((a, b) => a - b)
+      .map((startMs) => new Date(startMs).toISOString());
+    memberSlotSets.set(member.key, new Set(candidates.map((candidate) => candidate.startMs)));
+    for (const candidate of candidates) candidatesByStart.set(candidate.startMs, candidate);
+    for (const candidate of candidates) {
+      const startWall = utcToWall(config.hostTimezone, candidate.startMs);
+      const endWall = utcToWall(config.hostTimezone, candidate.endMs);
+      const startMinute = startWall.hour * 60 + startWall.minute;
+      const endMinute = wallDateKey(endWall) > wallDateKey(startWall)
+        ? 1440
+        : endWall.hour * 60 + endWall.minute;
+      windowStart = Math.min(windowStart, startMinute);
+      windowEnd = Math.max(windowEnd, endMinute);
+      bookableDates.add(wallDateKey(startWall));
+    }
+    const busy = mergeBusy(rawBusy.map((iv) => ({
+      startMs: Math.max(iv.startMs, fromMs),
+      endMs: Math.min(iv.endMs, toMs),
+    })).filter((iv) => iv.endMs > iv.startMs)).map((iv) => ({
+      startAt: new Date(iv.startMs).toISOString(),
+      endAt: new Date(iv.endMs).toISOString(),
+    }));
+    return { key: member.key, name: member.name, status: "ready", busy, working, eligibleStarts };
+  });
+
+  const reservedStarts = new Set(
+    (await bookingsPromise)
+      .filter((booking) => booking.pageKey === "")
+      .map((booking) => Date.parse(booking.startAt))
+      .filter(Number.isFinite)
+  );
+  const slots = availableSlots(
+    config,
+    [...candidatesByStart.values()].sort((a, b) => a.startMs - b.startMs),
+    busyByMember,
+    Date.now(),
+    config.quorum,
+    memberSlotSets
+  )
+    .filter((slot) => !reservedStarts.has(slot.startMs))
+    .map((slot) => ({
+      startAt: new Date(slot.startMs).toISOString(),
+      endAt: new Date(slot.startMs + config.durationMinutes * 60_000).toISOString(),
+      freeMemberKeys: slot.freeMemberKeys,
+    }));
+
+  return {
+    hostTimezone: config.hostTimezone,
+    generatedAt: new Date().toISOString(),
+    range: { from, to },
+    window: {
+      start: minutesToClock(Math.max(0, Math.min(1440, windowStart))),
+      end: minutesToClock(Math.max(0, Math.min(1440, windowEnd))),
+    },
+    durationMinutes: config.durationMinutes,
+    slotStepMinutes: config.slotStepMinutes,
+    minNoticeMinutes: config.minNoticeMinutes,
+    quorum: config.quorum,
+    bookableWeekdays: [...config.bookableWeekdays],
+    bookableDates: [...bookableDates].sort(),
+    members,
+    slots,
+  };
 }
 
 /**
