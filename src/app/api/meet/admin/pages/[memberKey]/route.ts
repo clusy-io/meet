@@ -8,7 +8,12 @@ import { ensureMockReady } from "@/lib/meet/mock";
 import { getEffectiveMeetConfig } from "@/lib/meet/members";
 import { hasTrustedMutationOrigin } from "@/lib/meet/requestSecurity";
 import { getMeetStore } from "@/lib/meet/store";
-import { isValidTimezone, parseCivilDate, parseClockToMinutes } from "@/lib/meet/tz";
+import {
+  isValidTimezone,
+  normalizeBookingWindow,
+  parseCivilDate,
+  parseClockToMinutes,
+} from "@/lib/meet/tz";
 import type { PageSettings } from "@/lib/meet/types";
 
 export const runtime = "nodejs";
@@ -189,13 +194,27 @@ export async function PATCH(request: Request, { params }: RouteContext) {
       : (current?.windowStartMin ?? null);
   const nextEnd =
     patch.windowEndMin !== undefined ? patch.windowEndMin : (current?.windowEndMin ?? null);
-  const effectiveStart = nextStart ?? config.windowStartMin;
-  const effectiveEnd = nextEnd ?? config.windowEndMin;
-  if (effectiveStart >= effectiveEnd) {
+  // A closing time at or before the opening time means the next day, so
+  // 08:00 to 02:00 is an 18-hour overnight window rather than a rejection.
+  // Normalizing here (not at read time) is what keeps the stored row in the
+  // canonical "minutes from the opening day's midnight" form the slot grid,
+  // the DB check constraint, and every span calculation all assume.
+  const window = normalizeBookingWindow(
+    nextStart ?? config.windowStartMin,
+    nextEnd ?? config.windowEndMin
+  );
+  if (!window) {
     return NextResponse.json(
-      { message: "The opening time must be before the closing time." },
+      { message: "Booking hours cannot span more than 24 hours." },
       { status: 400 }
     );
+  }
+  const { startMin: effectiveStart, endMin: effectiveEnd } = window;
+  // Persist the normalized close so the stored number always sits after the
+  // stored open. Only when this request is actually setting the close: a
+  // patch that touched neither side must stay a no-op for both.
+  if (patch.windowEndMin !== undefined && patch.windowEndMin !== null) {
+    patch.windowEndMin = effectiveEnd;
   }
   const nextDuration =
     (patch.durationMinutes !== undefined

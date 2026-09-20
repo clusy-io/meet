@@ -18,8 +18,9 @@ runs at [clusy.io/meet](https://clusy.io/meet).
 
 **Team availability** across any mix of Google Calendar and Microsoft Outlook
 accounts, with a configurable quorum and per-account busy calendars. Each host
-can keep their own IANA timezone, working hours and weekdays; a slot is offered
-only when enough people are both calendar-free and inside their local window.
+can keep their own IANA timezone, working hours and weekdays, including hours
+that run past midnight; a slot is offered only when enough people are both
+calendar-free and inside their local window.
 
 **A page per person**, alongside the team page. `/<member key>` books that one
 person against their own calendar, with quorum set aside.
@@ -132,6 +133,14 @@ Every field is optional and means "inherit the team-wide value", so raising the
 global window raises everyone's with it. A member with no stored row at all is
 a live page running on inherited settings.
 
+Booking hours may run past midnight. A closing time at or before the opening
+time is read as the next day, so a page set to open at 08:00 and close at
+02:00 offers an eighteen-hour window whose small-hours slots belong to the day
+the window opened: a Friday 08:00 to 02:00 page is bookable at Saturday 01:00
+even when Saturday itself is not a bookable weekday. The console labels such a
+window `(+1)` and says how long it stays open. A window may not exceed
+twenty-four hours.
+
 ---
 
 ## Slack
@@ -225,7 +234,7 @@ reminders, or the team's copy. Everything else is environment-driven:
 | --- | --- |
 | Identity | `NEXT_PUBLIC_SITE_URL`, `MEET_BRAND_NAME`, `MEET_EMAIL_FROM` |
 | Team | `MEET_MEMBERS`, `MEET_QUORUM`, `MEET_HOST_TIMEZONE`, optional `MEET_TIMEZONE_UNTIL` |
-| Window | `MEET_WINDOW_START`, `MEET_WINDOW_END`, `MEET_DURATION_MINUTES`, `MEET_SLOT_STEP_MINUTES`, `MEET_MIN_NOTICE_MINUTES`, `MEET_HORIZON_DAYS` |
+| Window | `MEET_WINDOW_START`, `MEET_WINDOW_END` (at or before the start means the next day, so `08:00`/`02:00` is overnight), `MEET_DURATION_MINUTES`, `MEET_SLOT_STEP_MINUTES`, `MEET_MIN_NOTICE_MINUTES`, `MEET_HORIZON_DAYS` |
 | Security | `MEET_ADMIN_SECRET`, `MEET_TOKEN_SECRET`, `CRON_SECRET` |
 | Storage | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` |
 | Providers | `MEET_GOOGLE_*`, `MEET_MICROSOFT_*`, `RESEND_API_KEY` |

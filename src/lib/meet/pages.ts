@@ -10,7 +10,7 @@ import {
 } from "./members";
 import { getMeetStore } from "./store";
 import type { Member, PageSettings } from "./types";
-import { isValidTimezone, parseCivilDate } from "./tz";
+import { isValidTimezone, normalizeBookingWindow, parseCivilDate } from "./tz";
 
 /**
  * meet — personal booking pages (/<memberKey>).
@@ -142,11 +142,16 @@ export function memberWindowConfig(
     config.timezoneUntil = { ...settings.timezoneUntil };
   }
 
-  const windowStart = settings.windowStartMin ?? base.windowStartMin;
-  const windowEnd = settings.windowEndMin ?? base.windowEndMin;
-  if (windowStart < windowEnd) {
-    config.windowStartMin = windowStart;
-    config.windowEndMin = windowEnd;
+  // Either side may be inherited, so the pair is normalized together: a page
+  // that stored only "closes at 02:00" is read against whatever the team open
+  // is today, and a close at or before the open means the next day.
+  const window = normalizeBookingWindow(
+    settings.windowStartMin ?? base.windowStartMin,
+    settings.windowEndMin ?? base.windowEndMin
+  );
+  if (window) {
+    config.windowStartMin = window.startMin;
+    config.windowEndMin = window.endMin;
   }
 
   const weekdays = settings.bookableWeekdays;

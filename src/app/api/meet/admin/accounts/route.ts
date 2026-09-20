@@ -3,14 +3,10 @@ import { requireAdmin } from "@/lib/meet/admin";
 import { ensureMockReady } from "@/lib/meet/mock";
 import { getEffectiveMeetConfig } from "@/lib/meet/members";
 import { getMeetStore } from "@/lib/meet/store";
+import { windowCrossesMidnight, windowMinutesToClock } from "@/lib/meet/tz";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-/** 510 -> "8:30", 1320 -> "22:00". */
-function minutesToClock(minutes: number): string {
-  return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, "0")}`;
-}
 
 export async function GET(request: Request) {
   if (!requireAdmin(request)) {
@@ -27,8 +23,9 @@ export async function GET(request: Request) {
     // Lets the admin UI disable the connect flows instead of dead-ending.
     mockMode: config.mockMode,
     window: {
-      start: minutesToClock(config.windowStartMin),
-      end: minutesToClock(config.windowEndMin),
+      start: windowMinutesToClock(config.windowStartMin),
+      end: windowMinutesToClock(config.windowEndMin),
+      crossesMidnight: windowCrossesMidnight(config.windowEndMin),
     },
     // Refresh-token ciphertext never leaves the server, even encrypted.
     accounts: accounts.filter((a) => activeMemberKeys.has(a.memberKey)).map((a) => ({

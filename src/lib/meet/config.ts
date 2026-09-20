@@ -1,5 +1,5 @@
 import "server-only";
-import { isValidTimezone, parseCivilDate } from "./tz";
+import { isValidTimezone, normalizeBookingWindow, parseCivilDate } from "./tz";
 import type { Member } from "./types";
 
 /**
@@ -22,9 +22,13 @@ export interface MeetConfig {
   hostTimezone: string;
   /** Optional scheduled timezone handover for the team defaults. */
   timezoneUntil?: TimezoneHandover | null;
-  /** Bookable window, minutes from midnight in hostTimezone. */
+  /**
+   * Bookable window, minutes from midnight in hostTimezone on the day the
+   * window opens. The close may run past 1440 into the next civil day, which
+   * is how an overnight window is expressed: 08:00 -> 02:00 is 480..1560.
+   */
   windowStartMin: number; // 8:30 -> 510
-  windowEndMin: number; // 22:00 -> 1320
+  windowEndMin: number; // 22:00 -> 1320, 02:00 the next day -> 1560
   /** ISO weekday numbers that are bookable (1=Mon .. 7=Sun). */
   bookableWeekdays: number[];
   /** Meeting length and slot grid step, minutes. */
@@ -244,11 +248,18 @@ export function getMeetConfig(): MeetConfig {
   if (!isValidTimezone(hostTimezone)) {
     throw new Error(`meet: MEET_HOST_TIMEZONE is not a valid IANA timezone: ${hostTimezone}`);
   }
-  const windowStartMin = timeEnv("MEET_WINDOW_START", 8 * 60 + 30);
-  const windowEndMin = timeEnv("MEET_WINDOW_END", 22 * 60);
-  if (windowStartMin >= windowEndMin) {
-    throw new Error("meet: MEET_WINDOW_START must be before MEET_WINDOW_END");
+  // A close at or before the open means the next day, so MEET_WINDOW_END=2:00
+  // with MEET_WINDOW_START=8:00 is an overnight window rather than an error.
+  const window = normalizeBookingWindow(
+    timeEnv("MEET_WINDOW_START", 8 * 60 + 30),
+    timeEnv("MEET_WINDOW_END", 22 * 60)
+  );
+  if (!window) {
+    throw new Error(
+      "meet: MEET_WINDOW_START/MEET_WINDOW_END must describe a window of at most 24 hours"
+    );
   }
+  const { startMin: windowStartMin, endMin: windowEndMin } = window;
   const durationMinutes = intEnv("MEET_DURATION_MINUTES", 30);
   const slotStepMinutes = intEnv("MEET_SLOT_STEP_MINUTES", 30);
   if (durationMinutes <= 0 || durationMinutes > windowEndMin - windowStartMin) {

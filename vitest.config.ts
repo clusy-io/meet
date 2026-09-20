@@ -1,4 +1,11 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
+
+// fileURLToPath, not URL.pathname: pathname keeps the percent-encoding, so a
+// checkout under a directory with a space in it resolved "@" to a path that
+// does not exist and every aliased import failed.
+const fromRoot = (path: string): string =>
+  fileURLToPath(new URL(path, import.meta.url));
 
 export default defineConfig({
   test: {
@@ -7,8 +14,8 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@": new URL("./src", import.meta.url).pathname,
-      "server-only": new URL("./test/server-only.ts", import.meta.url).pathname,
+      "@": fromRoot("./src"),
+      "server-only": fromRoot("./test/server-only.ts"),
     },
   },
 });

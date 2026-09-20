@@ -3,6 +3,8 @@ import type { MeetConfig } from "@/lib/meet/config";
 import {
   availableSlots,
   candidateSlots,
+  candidateSlotsInRange,
+  overnightOverhangMin,
   slotOnGrid,
   type SlotCandidate,
 } from "@/lib/meet/slots";
@@ -178,5 +180,85 @@ describe("timezone handover", () => {
     expect(slotOnGrid(handover, Date.parse("2026-08-28T04:30:00.000Z"))).toBe(true);
     expect(slotOnGrid(handover, Date.parse("2026-08-31T07:30:00.000Z"))).toBe(true);
     expect(slotOnGrid(handover, Date.parse("2026-09-01T04:30:00.000Z"))).toBe(false);
+  });
+});
+
+describe("overnight windows", () => {
+  // Bookings run 08:00 to 02:00 the next morning: 18 hours, so 36 half-hour
+  // slot starts, the last of them at 01:30.
+  const overnight: MeetConfig = {
+    ...config,
+    windowStartMin: 8 * 60,
+    windowEndMin: 26 * 60,
+  };
+  const isoOf = (startMs: number) => new Date(startMs).toISOString();
+
+  it("reports the overhang past midnight", () => {
+    expect(overnightOverhangMin(overnight)).toBe(120);
+    expect(overnightOverhangMin(config)).toBe(0);
+  });
+
+  it("runs a Monday window through to Tuesday 01:30 local", () => {
+    // 2026-08-17 is a Monday.
+    const monday = candidateSlots(overnight, { year: 2026, month: 8, day: 17 }, 1);
+    expect(monday).toHaveLength(36);
+    expect(isoOf(monday[0].startMs)).toBe("2026-08-17T15:00:00.000Z"); // 08:00 PDT
+    expect(isoOf(monday[35].startMs)).toBe("2026-08-18T08:30:00.000Z"); // 01:30 PDT
+  });
+
+  it("keeps the small hours on the weekday the window opened", () => {
+    // Friday 2026-08-21 opens a window that closes Saturday 02:00, and
+    // Saturday itself is not bookable: the late slots still belong to Friday.
+    const friday = candidateSlots(overnight, { year: 2026, month: 8, day: 21 }, 2);
+    const starts = friday.map((slot) => isoOf(slot.startMs));
+    expect(starts).toContain("2026-08-22T08:30:00.000Z"); // Sat 01:30 PDT
+    expect(starts).not.toContain("2026-08-22T15:00:00.000Z"); // Sat 08:00 PDT
+  });
+
+  it("accepts a post-midnight start on the grid", () => {
+    // The previous day's window is what puts this instant on the grid, so a
+    // check that only looked at its own civil date would reject it.
+    expect(slotOnGrid(overnight, Date.parse("2026-08-18T08:30:00.000Z"))).toBe(true);
+    expect(slotOnGrid(overnight, Date.parse("2026-08-18T08:45:00.000Z"))).toBe(false);
+    // Saturday 01:30 belongs to Friday's window; Saturday's own would be
+    // closed, and a Sunday-morning start has no open window behind it.
+    expect(slotOnGrid(overnight, Date.parse("2026-08-22T08:30:00.000Z"))).toBe(true);
+    expect(slotOnGrid(overnight, Date.parse("2026-08-23T08:30:00.000Z"))).toBe(false);
+  });
+
+  it("includes last night's tail and trims the day before the range", () => {
+    // Tuesday's range also carries Monday night's post-midnight slots, but
+    // none of Monday's daytime ones.
+    const tuesday = candidateSlotsInRange(
+      overnight,
+      { year: 2026, month: 8, day: 18 },
+      1
+    ).map((slot) => isoOf(slot.startMs));
+    expect(tuesday[0]).toBe("2026-08-18T07:00:00.000Z"); // Tue 00:00 PDT
+    expect(tuesday).toContain("2026-08-18T08:30:00.000Z"); // Tue 01:30 PDT
+    expect(tuesday).not.toContain("2026-08-17T15:00:00.000Z"); // Mon 08:00 PDT
+    expect(tuesday).toContain("2026-08-19T08:30:00.000Z"); // Wed 01:30 PDT
+  });
+
+  it("leaves a same-day window's range untouched", () => {
+    const from = { year: 2026, month: 8, day: 18 };
+    expect(candidateSlotsInRange(config, from, 3)).toEqual(
+      candidateSlots(config, from, 3)
+    );
+  });
+
+  it("keeps the last night bookable up to the horizon", () => {
+    // Horizon 1 means today and tomorrow. Tomorrow's window closes at 02:00
+    // the day after, which is past the plain civil-day edge.
+    const horizon: MeetConfig = { ...overnight, horizonDays: 1, minNoticeMinutes: 0 };
+    const nowMs = Date.parse("2026-08-17T16:00:00.000Z"); // Mon 09:00 PDT
+    const lateStart = Date.parse("2026-08-19T08:30:00.000Z"); // Wed 01:30 PDT
+    const candidates = candidateSlots(horizon, { year: 2026, month: 8, day: 17 }, 3);
+    const starts = availableSlots(horizon, candidates, allFree(), nowMs).map(
+      (slot) => slot.startMs
+    );
+    expect(starts).toContain(lateStart);
+    // Wednesday's own daytime window is a day past the horizon.
+    expect(starts).not.toContain(Date.parse("2026-08-19T15:00:00.000Z"));
   });
 });

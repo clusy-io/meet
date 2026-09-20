@@ -292,6 +292,54 @@ describe("effective config never offers a grid it would then refuse", () => {
     expect(window.durationMinutes).toBe(config.durationMinutes);
   });
 
+  it("inherits the team open when only the close is overridden", () => {
+    // The row stores 02:00 the next day as 1560, counted from the opening
+    // day's midnight, so it stays a close that sits after the team's 08:30.
+    const window = memberWindowConfig(config, settings({ windowEndMin: 26 * 60 }));
+    expect(window.windowStartMin).toBe(config.windowStartMin);
+    expect(window.windowEndMin).toBe(1560);
+  });
+
+  it("reads a stored close before the open as the next day", () => {
+    // A row written before overnight windows existed, or edited straight in
+    // the database, still resolves to a usable window.
+    const window = memberWindowConfig(
+      config,
+      settings({ windowStartMin: 20 * 60, windowEndMin: 2 * 60 })
+    );
+    expect(window.windowStartMin).toBe(1200);
+    expect(window.windowEndMin).toBe(1560);
+  });
+
+  it("falls back to the team window when the stored pair exceeds a day", () => {
+    // A 02:00-next-day close read against a 01:00 open would be 25 hours.
+    const window = memberWindowConfig(
+      config,
+      settings({ windowStartMin: 60, windowEndMin: 26 * 60 })
+    );
+    expect(window.windowStartMin).toBe(config.windowStartMin);
+    expect(window.windowEndMin).toBe(config.windowEndMin);
+  });
+
+  it("fits a personal meeting length to the overnight span", () => {
+    // 22:00 to 02:00 is four hours, so a three-hour meeting is accepted.
+    const effective = configForPage(
+      config,
+      member,
+      settings({
+        windowStartMin: 22 * 60,
+        windowEndMin: 2 * 60,
+        durationMinutes: 180,
+        slotStepMinutes: 180,
+      })
+    );
+    expect(effective.windowEndMin - effective.windowStartMin).toBe(240);
+    expect(effective.durationMinutes).toBe(180);
+    const [first, ...rest] = candidateSlots(effective, { year: 2026, month: 8, day: 17 }, 1);
+    expect(new Date(first.startMs).toISOString()).toBe("2026-08-18T05:00:00.000Z");
+    expect(rest).toHaveLength(0);
+  });
+
   it("moves a member grid on the scheduled civil date", () => {
     const moving = memberWindowConfig(
       config,
