@@ -67,8 +67,9 @@ describe("Meet config validation", () => {
       "MEET_SLOT_STEP_MINUTES",
     ],
     [{ MEET_QUORUM: "0" }, "MEET_QUORUM"],
-    [{ MEET_WINDOW_START: "22:00", MEET_WINDOW_END: "08:30" }, "MEET_WINDOW_START"],
     [{ MEET_WINDOW_END: "24:30" }, "MEET_WINDOW_END"],
+    // 24:00 is a closing time, never an opening one.
+    [{ MEET_WINDOW_START: "24:00" }, "at most 24 hours"],
     [{ MEET_HOST_TIMEZONE: "Mars/Olympus" }, "MEET_HOST_TIMEZONE"],
     [{ NEXT_PUBLIC_SITE_URL: "https://example.com/meet" }, "NEXT_PUBLIC_SITE_URL"],
     [{ MEET_EMAIL_FROM: "Clusy <not-an-email>" }, "MEET_EMAIL_FROM"],
@@ -76,6 +77,56 @@ describe("Meet config validation", () => {
     [{ MEET_HORIZON_DAYS: "forever" }, "MEET_HORIZON_DAYS"],
   ])("rejects dangerous bounds %#", (env, message) => {
     expect(configured(env)).toThrow(message);
+  });
+
+  it("reads a close at or before the open as the next day", () => {
+    const config = configured({
+      MEET_WINDOW_START: "08:00",
+      MEET_WINDOW_END: "02:00",
+      MEET_DURATION_MINUTES: "60",
+      MEET_SLOT_STEP_MINUTES: "60",
+    })();
+    expect(config.windowStartMin).toBe(480);
+    // 02:00 the next day, counted from the opening day's midnight.
+    expect(config.windowEndMin).toBe(1560);
+  });
+
+  it("treats an equal open and close as a full 24 hours", () => {
+    const config = configured({
+      MEET_WINDOW_START: "08:00",
+      MEET_WINDOW_END: "08:00",
+    })();
+    expect(config.windowEndMin - config.windowStartMin).toBe(1440);
+  });
+
+  it("keeps a same-day window on the day it opened", () => {
+    const config = configured({
+      MEET_WINDOW_START: "08:30",
+      MEET_WINDOW_END: "22:00",
+    })();
+    expect(config.windowStartMin).toBe(510);
+    expect(config.windowEndMin).toBe(1320);
+  });
+
+  it("measures the meeting length against the overnight span", () => {
+    // 22:00 to 02:00 is four hours, so a three-hour meeting fits and a
+    // five-hour one does not.
+    expect(
+      configured({
+        MEET_WINDOW_START: "22:00",
+        MEET_WINDOW_END: "02:00",
+        MEET_DURATION_MINUTES: "180",
+        MEET_SLOT_STEP_MINUTES: "180",
+      })().durationMinutes
+    ).toBe(180);
+    expect(
+      configured({
+        MEET_WINDOW_START: "22:00",
+        MEET_WINDOW_END: "02:00",
+        MEET_DURATION_MINUTES: "300",
+        MEET_SLOT_STEP_MINUTES: "300",
+      })
+    ).toThrow("MEET_DURATION_MINUTES");
   });
 
   it("allows bootstrap quorum above the env roster for later runtime additions", () => {

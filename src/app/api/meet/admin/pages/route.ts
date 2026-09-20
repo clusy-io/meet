@@ -6,7 +6,7 @@ import { getEffectiveMeetConfig, listEffectiveMembers } from "@/lib/meet/members
 import { configForPage, listPages } from "@/lib/meet/pages";
 import { zoneForCivilDay } from "@/lib/meet/slots";
 import { getMeetStore } from "@/lib/meet/store";
-import { minutesToClock, utcToWall } from "@/lib/meet/tz";
+import { utcToWall, windowCrossesMidnight, windowMinutesToClock } from "@/lib/meet/tz";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -47,8 +47,11 @@ export async function GET(request: Request) {
       timezoneUntil: config.timezoneUntil ?? null,
       durationMinutes: config.durationMinutes,
       slotStepMinutes: config.slotStepMinutes,
-      windowStart: minutesToClock(config.windowStartMin),
-      windowEnd: minutesToClock(config.windowEndMin),
+      windowStart: windowMinutesToClock(config.windowStartMin),
+      windowEnd: windowMinutesToClock(config.windowEndMin),
+      // "02:00" alone cannot say whether the window closed this morning
+      // or the next day. The console has to be able to label it.
+      windowCrossesMidnight: windowCrossesMidnight(config.windowEndMin),
       minNoticeMinutes: config.minNoticeMinutes,
       horizonDays: config.horizonDays,
       bookableWeekdays: config.bookableWeekdays,
@@ -78,8 +81,9 @@ export async function GET(request: Request) {
           timezoneUntil: inherited.timezoneUntil ?? null,
           durationMinutes: inherited.durationMinutes,
           slotStepMinutes: inherited.slotStepMinutes,
-          windowStart: minutesToClock(inherited.windowStartMin),
-          windowEnd: minutesToClock(inherited.windowEndMin),
+          windowStart: windowMinutesToClock(inherited.windowStartMin),
+          windowEnd: windowMinutesToClock(inherited.windowEndMin),
+          windowCrossesMidnight: windowCrossesMidnight(inherited.windowEndMin),
           minNoticeMinutes: inherited.minNoticeMinutes,
           horizonDays: inherited.horizonDays,
           bookableWeekdays: inherited.bookableWeekdays,
@@ -93,8 +97,9 @@ export async function GET(request: Request) {
           timezoneUntil: page.config.timezoneUntil ?? null,
           durationMinutes: page.config.durationMinutes,
           slotStepMinutes: page.config.slotStepMinutes,
-          windowStart: minutesToClock(page.config.windowStartMin),
-          windowEnd: minutesToClock(page.config.windowEndMin),
+          windowStart: windowMinutesToClock(page.config.windowStartMin),
+          windowEnd: windowMinutesToClock(page.config.windowEndMin),
+          windowCrossesMidnight: windowCrossesMidnight(page.config.windowEndMin),
           minNoticeMinutes: page.config.minNoticeMinutes,
           horizonDays: page.config.horizonDays,
           bookableWeekdays: page.config.bookableWeekdays,

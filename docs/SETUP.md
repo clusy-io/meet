@@ -24,6 +24,15 @@ table is intentionally a no-op overlay on `MEET_MEMBERS`, so the migration is
 safe while old instances are still draining. The focused migration is also at
 [`migrations/2026-08-31-runtime-members-and-timezones.sql`](migrations/2026-08-31-runtime-members-and-timezones.sql).
 
+Overnight booking hours widen the bounds on `meet_page_settings.window_end_min`
+so a page can close after midnight: the column counts minutes from midnight on
+the day the window OPENS, so 02:00 the next day is stored as 1560 and still
+sits after the opening minute. Every existing row is unchanged and already
+inside the new bounds, so this one is safe in either order, though applying it
+before the release keeps the console from rejecting a window the new code
+would accept. The focused migration is at
+[`migrations/2026-09-20-overnight-booking-windows.sql`](migrations/2026-09-20-overnight-booking-windows.sql).
+
 ## 2. Google OAuth
 
 Create a Web application in Google Cloud and configure:

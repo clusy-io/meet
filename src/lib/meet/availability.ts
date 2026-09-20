@@ -8,12 +8,14 @@ import { getProvider } from "./providers";
 import {
   availableSlots,
   candidateSlots,
+  candidateSlotsInRange,
+  overnightOverhangMin,
   transitionZones,
   zoneForCivilDay,
   type SlotCandidate,
 } from "./slots";
 import { getMeetStore } from "./store";
-import { addCivilDays, formatCivilDate, minutesToClock, parseCivilDate, utcToWall, wallToUtcMs } from "./tz";
+import { addCivilDays, formatCivilDate, MINUTES_PER_DAY, minutesToClock, parseCivilDate, utcToWall, wallToUtcMs, windowCrossesMidnight } from "./tz";
 import {
   mergeBusy,
   overlapsBusy,
@@ -189,6 +191,14 @@ function canonicalWindow(
     for (const zone of transitionZones(candidate)) zones.add(zone);
   }
 
+  // An overnight window's last night runs past the horizon edge, and slots
+  // there must still be judged against real calendar data: a busy map that
+  // stopped at midnight would read those hours as free.
+  let overhangMs = 0;
+  for (const candidate of [config, ...memberWindows]) {
+    overhangMs = Math.max(overhangMs, overnightOverhangMin(candidate) * 60_000);
+  }
+
   let fromMs = Number.POSITIVE_INFINITY;
   let toMs = Number.NEGATIVE_INFINITY;
   const civilKeys: string[] = [];
@@ -201,7 +211,7 @@ function canonicalWindow(
       wallToUtcMs(zone, today.year, today.month, today.day, 0, 0)
     );
     const edge = addCivilDays(today.year, today.month, today.day, config.horizonDays + 1);
-    toMs = Math.max(toMs, wallToUtcMs(zone, edge.year, edge.month, edge.day, 0, 0));
+    toMs = Math.max(toMs, wallToUtcMs(zone, edge.year, edge.month, edge.day, 0, 0) + overhangMs);
   }
 
   // Active roster membership belongs in the key: the provider map is a
@@ -218,7 +228,7 @@ function unionCandidates(configs: Iterable<MeetConfig>, fromCivil: {
 }, days: number): SlotCandidate[] {
   const byStart = new Map<number, SlotCandidate>();
   for (const config of configs) {
-    for (const candidate of candidateSlots(config, fromCivil, days)) {
+    for (const candidate of candidateSlotsInRange(config, fromCivil, days)) {
       if (!byStart.has(candidate.startMs)) byStart.set(candidate.startMs, candidate);
     }
   }
@@ -351,8 +361,14 @@ export async function computeMemberBusyTimeline(
     -MEMBER_GRID_CIVIL_PADDING_DAYS
   );
   const paddedDays = days + MEMBER_GRID_CIVIL_PADDING_DAYS * 2;
-  let windowStart = config.windowStartMin;
-  let windowEnd = config.windowEndMin;
+  // The timeline draws one civil day per row, so an overnight window has no
+  // single day-shaped span to seed from: its slots land at both ends of the
+  // row. Open the row to the whole day and let the candidate scan below keep
+  // it honest.
+  let windowStart = windowCrossesMidnight(config.windowEndMin) ? 0 : config.windowStartMin;
+  let windowEnd = windowCrossesMidnight(config.windowEndMin)
+    ? MINUTES_PER_DAY
+    : config.windowEndMin;
   const bookableDates = new Set<string>();
   const memberSlotSets = new Map<string, Set<number>>();
   const candidatesByStart = new Map<number, SlotCandidate>();
@@ -425,8 +441,8 @@ export async function computeMemberBusyTimeline(
     generatedAt: new Date().toISOString(),
     range: { from, to },
     window: {
-      start: minutesToClock(Math.max(0, Math.min(1440, windowStart))),
-      end: minutesToClock(Math.max(0, Math.min(1440, windowEnd))),
+      start: minutesToClock(Math.max(0, Math.min(MINUTES_PER_DAY, windowStart))),
+      end: minutesToClock(Math.max(0, Math.min(MINUTES_PER_DAY, windowEnd))),
     },
     durationMinutes: config.durationMinutes,
     slotStepMinutes: config.slotStepMinutes,
@@ -564,16 +580,22 @@ export async function computeAvailability(
 
   let candidates: SlotCandidate[];
   let memberSlotSets: Map<string, ReadonlySet<number>> | undefined;
+  let overhangMin = overnightOverhangMin(config);
   if (hostKey === undefined) {
     candidates = unionCandidates(memberWindows.values(), fromCivil, days);
     memberSlotSets = new Map(
       [...memberWindows].map(([memberKey, window]) => [
         memberKey,
-        new Set(candidateSlots(window, fromCivil, days).map((candidate) => candidate.startMs)),
+        new Set(
+          candidateSlotsInRange(window, fromCivil, days).map((candidate) => candidate.startMs)
+        ),
       ])
     );
+    for (const window of memberWindows.values()) {
+      overhangMin = Math.max(overhangMin, overnightOverhangMin(window));
+    }
   } else {
-    candidates = candidateSlots(config, fromCivil, days);
+    candidates = candidateSlotsInRange(config, fromCivil, days);
   }
   let slots = availableSlots(
     config,
@@ -581,7 +603,8 @@ export async function computeAvailability(
     busyMap,
     Date.now(),
     quorum,
-    memberSlotSets
+    memberSlotSets,
+    overhangMin
   );
   const required = requiredMemberKeys ? [...requiredMemberKeys] : [];
   if (required.length > 0) {

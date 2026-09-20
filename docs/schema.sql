@@ -214,8 +214,16 @@ create table if not exists public.meet_page_settings (
   timezone text,
   timezone_until_date text,
   timezone_until_zone text,
-  window_start_min int check (window_start_min between 0 and 1440),
-  window_end_min int check (window_end_min between 0 and 1440),
+  window_start_min int
+    constraint meet_page_settings_window_start_range
+    check (window_start_min between 0 and 1439),
+  -- Minutes from midnight on the day the window OPENS, so a window that runs
+  -- past midnight keeps counting: 02:00 the next day is 1560, not 120. That
+  -- is what keeps window_start_min < window_end_min true for an overnight
+  -- window, and every span calculation a plain subtraction.
+  window_end_min int
+    constraint meet_page_settings_window_end_range
+    check (window_end_min between 0 and 2880),
   bookable_weekdays jsonb,
   duration_minutes int check (duration_minutes > 0),
   slot_step_minutes int check (slot_step_minutes > 0),
@@ -229,10 +237,13 @@ create table if not exists public.meet_page_settings (
   slack_webhook_enc text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  check (
+  constraint meet_page_settings_window_order check (
     window_start_min is null
     or window_end_min is null
-    or window_start_min < window_end_min
+    or (
+      window_start_min < window_end_min
+      and window_end_min - window_start_min <= 1440
+    )
   ),
   constraint meet_page_settings_timezone_until_pair
     check ((timezone_until_date is null) = (timezone_until_zone is null))
@@ -253,6 +264,77 @@ begin
     alter table public.meet_page_settings
       add constraint meet_page_settings_timezone_until_pair
       check ((timezone_until_date is null) = (timezone_until_zone is null));
+  end if;
+end $$;
+
+-- Overnight booking windows (2026-09-20).
+--
+-- window_end_min used to be capped at 1440, which made "open 08:00, close
+-- 02:00" unexpressible: the close had to be readable as a later number than
+-- the open. It now carries minutes from midnight on the OPENING day, so an
+-- overnight close counts on past 1440 (02:00 the next day is 1560) and stays
+-- greater than the open. Existing rows are all <= 1440 and satisfy the new
+-- bounds unchanged, so this only widens what is accepted.
+--
+-- The original checks were created anonymously, so they are found by what
+-- they constrain rather than by name, then replaced with named ones.
+do $$
+declare
+  constraint_name text;
+begin
+  for constraint_name in
+    select con.conname
+    from pg_constraint con
+    where con.conrelid = 'public.meet_page_settings'::regclass
+      and con.contype = 'c'
+      and con.conname not in (
+        'meet_page_settings_window_start_range',
+        'meet_page_settings_window_end_range',
+        'meet_page_settings_window_order'
+      )
+      and pg_get_constraintdef(con.oid) like '%window_%_min%'
+  loop
+    execute format(
+      'alter table public.meet_page_settings drop constraint %I',
+      constraint_name
+    );
+  end loop;
+
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'meet_page_settings_window_start_range'
+      and conrelid = 'public.meet_page_settings'::regclass
+  ) then
+    alter table public.meet_page_settings
+      add constraint meet_page_settings_window_start_range
+      check (window_start_min between 0 and 1439);
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'meet_page_settings_window_end_range'
+      and conrelid = 'public.meet_page_settings'::regclass
+  ) then
+    alter table public.meet_page_settings
+      add constraint meet_page_settings_window_end_range
+      check (window_end_min between 0 and 2880);
+  end if;
+
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'meet_page_settings_window_order'
+      and conrelid = 'public.meet_page_settings'::regclass
+  ) then
+    alter table public.meet_page_settings
+      add constraint meet_page_settings_window_order
+      check (
+        window_start_min is null
+        or window_end_min is null
+        or (
+          window_start_min < window_end_min
+          and window_end_min - window_start_min <= 1440
+        )
+      );
   end if;
 end $$;
 

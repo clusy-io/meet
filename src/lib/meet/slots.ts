@@ -4,6 +4,7 @@ import { overlapsBusy } from "./types";
 import {
   addCivilDays,
   civilDayNumber,
+  MINUTES_PER_DAY,
   parseCivilDate,
   utcToWall,
   wallToUtcMs,
@@ -31,6 +32,19 @@ export function transitionZones(config: MeetConfig): string[] {
   return zones;
 }
 
+/**
+ * Minutes this config's window runs past midnight, 0 when it closes on the
+ * day it opened. An 08:00-02:00 window overhangs by 120.
+ *
+ * Slots belong to the civil day their window OPENED on, so the overhang is
+ * how far past a civil-day boundary a day's slots can still reach. Every
+ * boundary downstream (the horizon edge, the busy-data fetch window, the
+ * range a set of candidates has to cover) has to be widened by it.
+ */
+export function overnightOverhangMin(config: MeetConfig): number {
+  return Math.max(0, config.windowEndMin - MINUTES_PER_DAY);
+}
+
 /** Zone whose working hours govern this civil date. */
 export function zoneForCivilDay(
   config: MeetConfig,
@@ -51,6 +65,14 @@ export function zoneForCivilDay(
  * honoring the weekday filter and the bookable window. Weekday and window
  * are evaluated in the HOST zone: a Friday 9pm SF slot is Saturday in
  * Europe and still bookable, which is the intended semantics.
+ *
+ * A window that closes past midnight (windowEndMin > 1440) keeps producing
+ * slots into the following civil day, and they belong to the day the window
+ * opened: a Friday 08:00-02:00 window is bookable at Saturday 01:00 even
+ * when Saturday itself is not a bookable weekday. The hour handed to
+ * `wallToUtcMs` is allowed to exceed 23 for exactly that reason — Date.UTC
+ * rolls it into the next day, and the zone offset is then resolved at the
+ * real instant.
  */
 export function candidateSlots(
   config: MeetConfig,
@@ -86,19 +108,54 @@ export function candidateSlots(
   return out;
 }
 
-/** True when an instant is one of this config's candidate slot starts. */
+/**
+ * True when an instant is one of this config's candidate slot starts.
+ *
+ * Generates the day BEFORE the instant's civil date as well, because an
+ * overnight window puts a 01:00 slot on the grid of the previous day. Only
+ * checking the instant's own date rejected every post-midnight slot the
+ * booking page had just offered.
+ */
 export function slotOnGrid(config: MeetConfig, startMs: number): boolean {
   for (const zone of transitionZones(config)) {
     const wall = utcToWall(zone, startMs);
+    const from = addCivilDays(wall.year, wall.month, wall.day, -1);
     if (
-      candidateSlots(config, { year: wall.year, month: wall.month, day: wall.day }, 1).some(
-        (candidate) => candidate.startMs === startMs
-      )
+      candidateSlots(config, from, 2).some((candidate) => candidate.startMs === startMs)
     ) {
       return true;
     }
   }
   return false;
+}
+
+/**
+ * Candidates that can start at or after midnight on `from`, covering `days`
+ * civil days of opening dates.
+ *
+ * With an overnight window the previous day's window is still open after
+ * midnight, so its tail has to be generated too and then trimmed back to the
+ * requested range. Without the trim a request for next month would answer
+ * with slots on the last day of this one.
+ */
+export function candidateSlotsInRange(
+  config: MeetConfig,
+  from: { year: number; month: number; day: number },
+  days: number
+): SlotCandidate[] {
+  if (overnightOverhangMin(config) === 0) return candidateSlots(config, from, days);
+  const previous = addCivilDays(from.year, from.month, from.day, -1);
+  const floorMs = wallToUtcMs(
+    zoneForCivilDay(config, from),
+    from.year,
+    from.month,
+    from.day,
+    0,
+    0
+  );
+  return candidateSlots(config, previous, days + 1).filter(
+    (candidate) => candidate.startMs >= floorMs
+  );
 }
 
 /**
@@ -121,7 +178,14 @@ export function availableSlots(
   nowMs: number,
   quorum: number = config.quorum,
   /** Optional per-member starts allowed by their own zone/hours/weekdays. */
-  memberSlotSets?: Map<string, ReadonlySet<number>>
+  memberSlotSets?: Map<string, ReadonlySet<number>>,
+  /**
+   * How far past the horizon's last civil day a slot may still start, in
+   * minutes. Defaults to this config's own overnight overhang; the team page
+   * passes the widest overhang across its members, so one member's late
+   * window does not get its last night truncated by the team default.
+   */
+  overhangMin: number = overnightOverhangMin(config)
 ): Array<{ startMs: number; freeMemberKeys: string[] }> {
   const minStartMs = nowMs + config.minNoticeMinutes * 60_000;
   // Horizon: last bookable civil day in host tz is today + horizonDays.
@@ -134,14 +198,18 @@ export function availableSlots(
     nowWall.day,
     config.horizonDays + 1
   );
-  const horizonMs = wallToUtcMs(
-    zoneForCivilDay(config, horizonEdge),
-    horizonEdge.year,
-    horizonEdge.month,
-    horizonEdge.day,
-    0,
-    0
-  );
+  // The last bookable day's window is still open past its own midnight when
+  // the window is overnight, so the edge moves with it.
+  const horizonMs =
+    wallToUtcMs(
+      zoneForCivilDay(config, horizonEdge),
+      horizonEdge.year,
+      horizonEdge.month,
+      horizonEdge.day,
+      0,
+      0
+    ) +
+    Math.max(0, overhangMin) * 60_000;
 
   const out: Array<{ startMs: number; freeMemberKeys: string[] }> = [];
   for (const slot of candidates) {

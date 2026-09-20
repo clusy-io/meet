@@ -140,12 +140,32 @@ export function parseCivilDate(
   return { year, month, day };
 }
 
+/** Minutes in one civil day. */
+export const MINUTES_PER_DAY = 1440;
+
 /**
  * Minutes from midnight to a clock string: 510 -> "8:30", 1320 -> "22:00".
  * Shared by the admin routes that render the booking window.
+ *
+ * Minutes past 24:00 keep counting up (1560 -> "26:00"), which is what the
+ * timeline labels want. Use `windowMinutesToClock` for anything a person
+ * reads as a wall clock.
  */
 export function minutesToClock(minutes: number): string {
   return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, "0")}`;
+}
+
+/**
+ * A booking-window bound as a zero-padded wall clock, wrapping past midnight:
+ * 510 -> "08:30", 1320 -> "22:00", 1560 (02:00 the next day) -> "02:00",
+ * 1440 -> "00:00".
+ *
+ * Zero-padded because this is the value an `<input type="time">` is given,
+ * and that element silently rejects "8:30".
+ */
+export function windowMinutesToClock(minutes: number): string {
+  const wrapped = ((minutes % MINUTES_PER_DAY) + MINUTES_PER_DAY) % MINUTES_PER_DAY;
+  return `${String(Math.floor(wrapped / 60)).padStart(2, "0")}:${String(wrapped % 60).padStart(2, "0")}`;
 }
 
 /** "8:30" / "08:30" -> 510. Null for anything malformed or out of range. */
@@ -156,6 +176,38 @@ export function parseClockToMinutes(value: string): number | null {
   const minute = Number(m[2]);
   if (minute > 59 || hour > 24 || (hour === 24 && minute !== 0)) return null;
   return hour * 60 + minute;
+}
+
+/**
+ * Put a booking window into the canonical form the rest of meet works in:
+ * minutes from midnight on the day the window OPENS, with the close allowed
+ * to run past 1440 into the next civil day.
+ *
+ * A closing time at or before the opening time is read as "the next day", so
+ * 08:00 to 02:00 becomes 480..1560 and a bare 08:00 to 08:00 is a full 24
+ * hours. Keeping `start < end` in a single number line is what lets every
+ * span calculation downstream (`end - start`, the candidate loop, the
+ * meeting-length fit) stay the plain subtraction it already was.
+ *
+ * Returns null when the pair cannot be a window: a close more than 24 hours
+ * after the open, or bounds outside a day. Callers decide whether that is a
+ * 400 or a fall back to the inherited window.
+ */
+export function normalizeBookingWindow(
+  startMin: number,
+  endMin: number
+): { startMin: number; endMin: number } | null {
+  if (!Number.isInteger(startMin) || !Number.isInteger(endMin)) return null;
+  if (startMin < 0 || startMin >= MINUTES_PER_DAY) return null;
+  if (endMin < 0 || endMin > MINUTES_PER_DAY * 2) return null;
+  const end = endMin <= startMin ? endMin + MINUTES_PER_DAY : endMin;
+  if (end - startMin > MINUTES_PER_DAY) return null;
+  return { startMin, endMin: end };
+}
+
+/** True when a normalized window runs past midnight into the next civil day. */
+export function windowCrossesMidnight(endMin: number): boolean {
+  return endMin > MINUTES_PER_DAY;
 }
 
 /** True when `value` names an IANA timezone supported by this runtime. */

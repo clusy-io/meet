@@ -1,9 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   formatCivilDate,
+  minutesToClock,
+  normalizeBookingWindow,
   parseCivilDate,
+  parseClockToMinutes,
   utcToWall,
   wallToUtcMs,
+  windowCrossesMidnight,
+  windowMinutesToClock,
   zoneOffsetMs,
 } from "@/lib/meet/tz";
 
@@ -80,5 +85,76 @@ describe("civil date parse/format", () => {
     expect(parseCivilDate("2026-01-32")).toBeNull();
     expect(parseCivilDate("2026-02-30")).toBeNull();
     expect(parseCivilDate("2026-08-05T00:00:00Z")).toBeNull();
+  });
+});
+
+describe("normalizeBookingWindow", () => {
+  it("keeps a same-day window as written", () => {
+    expect(normalizeBookingWindow(510, 1320)).toEqual({
+      startMin: 510,
+      endMin: 1320,
+    });
+  });
+
+  it("reads a close before the open as the next day", () => {
+    // 08:00 to 02:00 is an 18-hour overnight window.
+    expect(normalizeBookingWindow(8 * 60, 2 * 60)).toEqual({
+      startMin: 480,
+      endMin: 1560,
+    });
+  });
+
+  it("reads an equal open and close as a full day", () => {
+    expect(normalizeBookingWindow(480, 480)).toEqual({
+      startMin: 480,
+      endMin: 1920,
+    });
+  });
+
+  it("leaves an already-normalized overnight close alone", () => {
+    expect(normalizeBookingWindow(480, 1560)).toEqual({
+      startMin: 480,
+      endMin: 1560,
+    });
+  });
+
+  it("rejects a window longer than a day or bounds outside one", () => {
+    // A stored 02:00-next-day close read against a 01:00 open is 25 hours.
+    expect(normalizeBookingWindow(60, 1560)).toBeNull();
+    expect(normalizeBookingWindow(1440, 1500)).toBeNull();
+    expect(normalizeBookingWindow(-1, 600)).toBeNull();
+    expect(normalizeBookingWindow(480, 3000)).toBeNull();
+    expect(normalizeBookingWindow(480.5, 1200)).toBeNull();
+  });
+
+  it("says which windows cross midnight", () => {
+    expect(windowCrossesMidnight(1320)).toBe(false);
+    expect(windowCrossesMidnight(1440)).toBe(false);
+    expect(windowCrossesMidnight(1560)).toBe(true);
+  });
+});
+
+describe("clock formatting", () => {
+  it("renders window bounds zero-padded and wrapped past midnight", () => {
+    // Zero-padded because this is what an <input type="time"> is handed, and
+    // that element silently rejects "8:30".
+    expect(windowMinutesToClock(510)).toBe("08:30");
+    expect(windowMinutesToClock(1320)).toBe("22:00");
+    expect(windowMinutesToClock(1440)).toBe("00:00");
+    expect(windowMinutesToClock(1560)).toBe("02:00");
+  });
+
+  it("keeps the timeline formatter counting past 24:00", () => {
+    expect(minutesToClock(510)).toBe("8:30");
+    expect(minutesToClock(1440)).toBe("24:00");
+  });
+
+  it("roundtrips a window through its clock strings", () => {
+    const start = parseClockToMinutes(windowMinutesToClock(480));
+    const end = parseClockToMinutes(windowMinutesToClock(1560));
+    expect(normalizeBookingWindow(start!, end!)).toEqual({
+      startMin: 480,
+      endMin: 1560,
+    });
   });
 });

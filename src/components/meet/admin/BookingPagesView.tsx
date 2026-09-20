@@ -35,6 +35,12 @@ import {
   UserRound,
   X,
 } from "lucide-react";
+import {
+  MINUTES_PER_DAY,
+  normalizeBookingWindow,
+  parseClockToMinutes,
+  windowMinutesToClock,
+} from "@/lib/meet/tz";
 import type { PersonalPage, PersonalPagesResponse } from "./types";
 
 const FOCUS_RING =
@@ -136,6 +142,13 @@ interface DraftPreview {
   slotStepMinutes: number;
   windowStart: string;
   windowEnd: string;
+  /**
+   * The same window as minutes from the opening day's midnight, so the close
+   * of an overnight window stays distinguishable from the same clock face
+   * earlier the same morning (02:00 is 1560, not 120).
+   */
+  windowStartMin: number;
+  windowEndMin: number;
   minNoticeMinutes: number;
   horizonDays: number;
   bookableWeekdays: number[];
@@ -301,6 +314,16 @@ function previewFor(
         timezone: draft.moveFromTimezone.trim(),
       }
     : defaults.timezoneUntil;
+  // Falls back to the page's stored window when the draft is mid-edit and not
+  // yet a readable pair of times, so the preview never blanks out under a
+  // half-typed "0".
+  const previewWindow =
+    draftWindow(
+      draft.windowStart.trim() || defaults.windowStart,
+      draft.windowEnd.trim() || defaults.windowEnd,
+    ) ??
+    draftWindow(page.effective.windowStart, page.effective.windowEnd) ??
+    { startMin: 0, endMin: MINUTES_PER_DAY };
   const today = civilToday(timezone);
   const timezoneToday =
     timezoneUntil && today && today < timezoneUntil.beforeDate
@@ -322,8 +345,10 @@ function previewFor(
       draft.slotStepMinutes,
       defaults.slotStepMinutes,
     ),
-    windowStart: draft.windowStart.trim() || defaults.windowStart,
-    windowEnd: draft.windowEnd.trim() || defaults.windowEnd,
+    windowStart: windowMinutesToClock(previewWindow.startMin),
+    windowEnd: windowMinutesToClock(previewWindow.endMin),
+    windowStartMin: previewWindow.startMin,
+    windowEndMin: previewWindow.endMin,
     minNoticeMinutes: integerOrDefault(
       draft.minNoticeMinutes,
       defaults.minNoticeMinutes,
@@ -336,14 +361,49 @@ function previewFor(
   };
 }
 
-function clockMinutes(value: string): number | null {
-  const match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
-  if (!match) return null;
-  const hours = Number(match[1]);
-  const minutes = Number(match[2]);
-  if (hours > 24 || minutes > 59 || (hours === 24 && minutes !== 0))
-    return null;
-  return hours * 60 + minutes;
+/**
+ * The window a pair of HH:MM strings describes, in the same canonical form
+ * the server stores: minutes from midnight on the opening day, with a close
+ * at or before the open meaning the next day. Null when either side is not a
+ * time at all.
+ *
+ * Shared with the server rather than reimplemented here, so "8am to 2am" is
+ * the same 18-hour window on both sides of the request.
+ */
+function draftWindow(
+  startText: string,
+  endText: string,
+): { startMin: number; endMin: number } | null {
+  const start = parseClockToMinutes(startText);
+  const end = parseClockToMinutes(endText);
+  if (start === null || end === null) return null;
+  return normalizeBookingWindow(start, end);
+}
+
+/** "08:00–02:00 (+1)" for an overnight window, plain hours otherwise. */
+function windowLabel(startMin: number, endMin: number): string {
+  const span = `${windowMinutesToClock(startMin)}–${windowMinutesToClock(endMin)}`;
+  return endMin > MINUTES_PER_DAY ? `${span} (+1)` : span;
+}
+
+/**
+ * Four representative slot times spread across the window, for the preview's
+ * time grid. Derived rather than hardcoded so an overnight window shows its
+ * small-hours slots instead of a midday time it never offers.
+ */
+function sampleSlotTimes(preview: DraftPreview): string[] {
+  const last = preview.windowEndMin - preview.durationMinutes;
+  const span = Math.max(0, last - preview.windowStartMin);
+  return [0, 1, 2, 3].map((index) =>
+    windowMinutesToClock(preview.windowStartMin + Math.round((span * index) / 3)),
+  );
+}
+
+/** "18h" / "8h 30m", for the overnight hint under the closing field. */
+function spanLabel(minutes: number): string {
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours}h` : `${hours}h ${rest}m`;
 }
 
 function slackWebhookIsValid(raw: string): boolean {
@@ -476,15 +536,16 @@ function validateDraft(
     errors.push("Slot cadence cannot be shorter than the meeting length.");
   }
 
-  const startText = draft.windowStart.trim() || defaults.windowStart;
-  const endText = draft.windowEnd.trim() || defaults.windowEnd;
-  const start = clockMinutes(startText);
-  const end = clockMinutes(endText);
-  if (start === null || end === null) {
+  // A closing time at or before the opening time is an overnight window
+  // ("bookings run 08:00 to 02:00"), not a mistake, so the only thing left to
+  // reject here is a meeting that cannot fit inside the hours.
+  const window = draftWindow(
+    draft.windowStart.trim() || defaults.windowStart,
+    draft.windowEnd.trim() || defaults.windowEnd,
+  );
+  if (!window) {
     errors.push("Booking hours must use a valid HH:MM time.");
-  } else if (start >= end) {
-    errors.push("Opening time must be before closing time.");
-  } else if (duration > end - start) {
+  } else if (duration > window.endMin - window.startMin) {
     errors.push("Meeting length must fit inside the booking hours.");
   }
 
@@ -2172,7 +2233,7 @@ function BookingPageEditor({
         />
         <RuleSummary
           label="Working pattern"
-          value={`${preview.windowStart}–${preview.windowEnd}`}
+          value={windowLabel(preview.windowStartMin, preview.windowEndMin)}
           detail={`${weekdaySummary(preview.bookableWeekdays)} · ${inheritsWeekdays ? "inherited" : "member rule"}`}
         />
         <RuleSummary
@@ -2650,6 +2711,13 @@ function BookingPageEditor({
                     defaultText={defaults.windowEnd}
                     type="time"
                     onChange={(value) => update("windowEnd", value)}
+                    note={
+                      preview.windowEndMin > MINUTES_PER_DAY
+                        ? `Closes ${preview.windowEnd} the next day · ${spanLabel(
+                            preview.windowEndMin - preview.windowStartMin,
+                          )} open from ${preview.windowStart}.`
+                        : "A closing time at or before the opening time runs overnight, into the next day."
+                    }
                   />
                   <InheritedField
                     id={`notice-${page.memberKey}`}
@@ -3101,6 +3169,7 @@ function InheritedField({
   type = "text",
   inputMode,
   list,
+  note,
 }: {
   id: string;
   label: string;
@@ -3112,6 +3181,8 @@ function InheritedField({
   type?: "text" | "time";
   inputMode?: "numeric";
   list?: string;
+  /** Extra line under the field, for rules the value alone cannot show. */
+  note?: string;
 }) {
   const custom = Boolean(value.trim());
   return (
@@ -3139,6 +3210,9 @@ function InheritedField({
           ? "Overrides the inherited default"
           : `Inheriting ${defaultText}`}
       </span>
+      {note && (
+        <span className="mt-1 block text-[11px] text-ink-faint">{note}</span>
+      )}
     </label>
   );
 }
@@ -3188,8 +3262,8 @@ function BookingPagePreview({
           )}
           <div className="mx-auto mt-4 inline-flex items-center gap-2 rounded-full border border-hairline bg-paper px-3 py-1.5 text-[10px] text-ink-mute">
             <Clock3 className="h-3 w-3" strokeWidth={1.7} />
-            {preview.durationMinutes} min · {preview.windowStart}–
-            {preview.windowEnd}
+            {preview.durationMinutes} min ·{" "}
+            {windowLabel(preview.windowStartMin, preview.windowEndMin)}
           </div>
 
           <div className="mt-5 rounded-xl border border-hairline bg-paper p-3 text-left">
@@ -3228,16 +3302,14 @@ function BookingPagePreview({
                 : "Weekend dates are closed"}
             </p>
             <div className="mt-3 grid grid-cols-2 gap-1.5">
-              {[preview.windowStart, "11:30", "14:00", preview.windowEnd].map(
-                (time, index) => (
-                  <span
-                    key={`${time}-${index}`}
-                    className="rounded-md border border-hairline bg-paper-raise px-2 py-1.5 text-center text-[9px] text-ink-mute"
-                  >
-                    {time}
-                  </span>
-                ),
-              )}
+              {sampleSlotTimes(preview).map((time, index) => (
+                <span
+                  key={`${time}-${index}`}
+                  className="rounded-md border border-hairline bg-paper-raise px-2 py-1.5 text-center text-[9px] text-ink-mute"
+                >
+                  {time}
+                </span>
+              ))}
             </div>
           </div>
           <p className="mt-3 flex items-center justify-center gap-1 text-[9px] text-ink-faint">

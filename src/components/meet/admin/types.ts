@@ -20,7 +20,7 @@ export interface AdminOverview {
   members: Member[];
   quorum: number;
   hostTimezone: string;
-  window: { start: string; end: string };
+  window: { start: string; end: string; crossesMidnight: boolean };
   accounts: AdminAccount[];
   /** True when the server runs on in-memory fake calendars. */
   mockMode: boolean;
@@ -82,6 +82,8 @@ export interface PersonalPage {
     slotStepMinutes: number;
     windowStart: string;
     windowEnd: string;
+    /** True when the close belongs to the next civil day (08:00 to 02:00). */
+    windowCrossesMidnight: boolean;
     minNoticeMinutes: number;
     horizonDays: number;
     bookableWeekdays: number[];
@@ -96,6 +98,8 @@ export interface PersonalPage {
     slotStepMinutes: number;
     windowStart: string;
     windowEnd: string;
+    /** True when the close belongs to the next civil day (08:00 to 02:00). */
+    windowCrossesMidnight: boolean;
     minNoticeMinutes: number;
     horizonDays: number;
     bookableWeekdays: number[];
@@ -129,6 +133,8 @@ export interface PersonalPagesResponse {
     slotStepMinutes: number;
     windowStart: string;
     windowEnd: string;
+    /** True when the close belongs to the next civil day (08:00 to 02:00). */
+    windowCrossesMidnight: boolean;
     minNoticeMinutes: number;
     horizonDays: number;
     bookableWeekdays: number[];
