@@ -4,8 +4,10 @@ import {
   availableSlots,
   candidateSlots,
   candidateSlotsInRange,
+  horizonEdgeMs,
   overnightOverhangMin,
   slotOnGrid,
+  widestOverhangMin,
   type SlotCandidate,
 } from "@/lib/meet/slots";
 import type { BusyInterval } from "@/lib/meet/types";
@@ -181,6 +183,18 @@ describe("timezone handover", () => {
     expect(slotOnGrid(handover, Date.parse("2026-08-31T07:30:00.000Z"))).toBe(true);
     expect(slotOnGrid(handover, Date.parse("2026-09-01T04:30:00.000Z"))).toBe(false);
   });
+
+  it("puts the horizon edge in the zone its day runs on", () => {
+    // Today and the edge day both fall before the handover, so both are LA
+    // days even though the host zone is already London.
+    const pending: MeetConfig = {
+      ...handover,
+      horizonDays: 30,
+      timezoneUntil: { beforeDate: "2026-09-30", timezone: LA },
+    };
+    const nowMs = Date.parse("2026-08-17T16:00:00.000Z"); // Mon 09:00 PDT
+    expect(horizonEdgeMs(pending, nowMs)).toBe(Date.parse("2026-09-17T07:00:00.000Z"));
+  });
 });
 
 describe("overnight windows", () => {
@@ -260,5 +274,36 @@ describe("overnight windows", () => {
     expect(starts).toContain(lateStart);
     // Wednesday's own daytime window is a day past the horizon.
     expect(starts).not.toContain(Date.parse("2026-08-19T15:00:00.000Z"));
+  });
+
+  it("takes the widest overhang across grids", () => {
+    const late: MeetConfig = { ...config, windowStartMin: 9 * 60, windowEndMin: 27 * 60 };
+    expect(widestOverhangMin([])).toBe(0);
+    expect(widestOverhangMin([config])).toBe(0);
+    expect(widestOverhangMin([config, overnight, late])).toBe(180);
+  });
+
+  it("puts the horizon edge a month out, overnight tail included", () => {
+    const month: MeetConfig = { ...overnight, horizonDays: 30 };
+    const nowMs = Date.parse("2026-10-05T16:00:00.000Z"); // Mon 09:00 PDT
+    // The last bookable day is Wed Nov 4, so the edge is the following
+    // midnight (Thu Nov 5 00:00 PST, after the DST change) plus 02:00.
+    const midnight = Date.parse("2026-11-05T08:00:00.000Z");
+    expect(horizonEdgeMs(month, nowMs, 0)).toBe(midnight);
+    expect(horizonEdgeMs(month, nowMs)).toBe(midnight + 120 * MIN);
+    expect(horizonEdgeMs({ ...config, horizonDays: 30 }, nowMs)).toBe(midnight);
+  });
+
+  it("offers the whole thirtieth day and its night, and nothing after", () => {
+    const month: MeetConfig = { ...overnight, horizonDays: 30, minNoticeMinutes: 0 };
+    const nowMs = Date.parse("2026-10-05T16:00:00.000Z"); // Mon Oct 5 09:00 PDT
+    const candidates = candidateSlotsInRange(month, { year: 2026, month: 10, day: 5 }, 33);
+    const starts = availableSlots(month, candidates, allFree(), nowMs).map((slot) =>
+      isoOf(slot.startMs)
+    );
+    expect(starts).toContain("2026-11-04T16:00:00.000Z"); // Wed Nov 4 08:00 PST
+    expect(starts).toContain("2026-11-05T09:30:00.000Z"); // Thu Nov 5 01:30 PST
+    expect(starts.at(-1)).toBe("2026-11-05T09:30:00.000Z");
+    expect(starts).not.toContain("2026-11-05T16:00:00.000Z"); // Thu Nov 5 08:00 PST
   });
 });

@@ -272,7 +272,7 @@ export function getMeetConfig(): MeetConfig {
   if (minNoticeMinutes < 0) {
     throw new Error("meet: MEET_MIN_NOTICE_MINUTES cannot be negative");
   }
-  const horizonDays = intEnv("MEET_HORIZON_DAYS", 21);
+  const horizonDays = intEnv("MEET_HORIZON_DAYS", 30);
   if (horizonDays < 0 || horizonDays > 366) {
     throw new Error("meet: MEET_HORIZON_DAYS must be between 0 and 366");
   }

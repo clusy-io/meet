@@ -11,6 +11,7 @@ import {
   candidateSlotsInRange,
   overnightOverhangMin,
   transitionZones,
+  widestOverhangMin,
   zoneForCivilDay,
   type SlotCandidate,
 } from "./slots";
@@ -176,11 +177,11 @@ const CACHE_TTL_MS = 60_000;
  *
  * The caller's `from`/`days` deliberately do NOT appear here. They are
  * client-controlled (route.ts clamps them only to [today, today+horizon] and
- * [1,36], ~790 reachable combinations), and keying the cache on them let any
- * unauthenticated visitor miss on every request and fan out a fresh set of
- * Google/Microsoft calls each time. Since no candidate outside this window can
- * survive the horizon filter anyway, a single canonical fetch per day serves
- * every caller with an identical result.
+ * [1, horizon+3], over a thousand combinations at a 30-day horizon), and
+ * keying the cache on them let any unauthenticated visitor miss on every
+ * request and fan out a fresh set of Google/Microsoft calls each time. Since
+ * no candidate outside this window can survive the horizon filter anyway, a
+ * single canonical fetch per day serves every caller with an identical result.
  */
 function canonicalWindow(
   config: MeetConfig,
@@ -194,10 +195,7 @@ function canonicalWindow(
   // An overnight window's last night runs past the horizon edge, and slots
   // there must still be judged against real calendar data: a busy map that
   // stopped at midnight would read those hours as free.
-  let overhangMs = 0;
-  for (const candidate of [config, ...memberWindows]) {
-    overhangMs = Math.max(overhangMs, overnightOverhangMin(candidate) * 60_000);
-  }
+  const overhangMs = widestOverhangMin([config, ...memberWindows]) * 60_000;
 
   let fromMs = Number.POSITIVE_INFINITY;
   let toMs = Number.NEGATIVE_INFINITY;
@@ -427,7 +425,10 @@ export async function computeMemberBusyTimeline(
     busyByMember,
     Date.now(),
     config.quorum,
-    memberSlotSets
+    memberSlotSets,
+    // The public team page's edge: its last night runs as late as the
+    // latest-closing member window, so the timeline's must too.
+    widestOverhangMin([config, ...windows.values()])
   )
     .filter((slot) => !reservedStarts.has(slot.startMs))
     .map((slot) => ({
@@ -532,8 +533,8 @@ export async function computeAvailability(
     providerBusy = new Map(hit.entries);
   } else {
     // A page with a longer horizon widens the shared entry rather than
-    // replacing it with a narrower one, so a 14-day personal page can never
-    // shrink the window the 21-day team page is relying on.
+    // replacing it with a narrower one, so a personal page with a shorter
+    // horizon can never shrink the window the team page is relying on.
     // Deliberately fetches EVERY member, not just this page's owner, so the
     // cached map stays page-independent and the team page and each personal
     // page share one entry and one set of provider calls. Narrowing it here
@@ -591,9 +592,7 @@ export async function computeAvailability(
         ),
       ])
     );
-    for (const window of memberWindows.values()) {
-      overhangMin = Math.max(overhangMin, overnightOverhangMin(window));
-    }
+    overhangMin = widestOverhangMin([config, ...memberWindows.values()]);
   } else {
     candidates = candidateSlotsInRange(config, fromCivil, days);
   }

@@ -45,6 +45,56 @@ export function overnightOverhangMin(config: MeetConfig): number {
   return Math.max(0, config.windowEndMin - MINUTES_PER_DAY);
 }
 
+/**
+ * The widest overhang among several window grids. The team page offers the
+ * union of its members' grids, so its last night reaches as far as the
+ * latest-closing member window does.
+ */
+export function widestOverhangMin(configs: Iterable<MeetConfig>): number {
+  let widest = 0;
+  for (const config of configs) {
+    widest = Math.max(widest, overnightOverhangMin(config));
+  }
+  return widest;
+}
+
+/**
+ * The first instant past the booking horizon. The last bookable civil day is
+ * today + horizonDays, both evaluated in the zone that day runs on (so a
+ * pending timezone handover moves the edge with it), and an overnight window
+ * keeps that day open `overhangMin` past its midnight.
+ *
+ * The picker (availableSlots) and the booking and reschedule checks both take
+ * the edge from here, so a slot the picker offers is never refused as beyond
+ * the horizon.
+ */
+export function horizonEdgeMs(
+  config: MeetConfig,
+  nowMs: number,
+  overhangMin: number = overnightOverhangMin(config)
+): number {
+  let nowWall = utcToWall(config.hostTimezone, nowMs);
+  const todayZone = zoneForCivilDay(config, nowWall);
+  if (todayZone !== config.hostTimezone) nowWall = utcToWall(todayZone, nowMs);
+  const edge = addCivilDays(
+    nowWall.year,
+    nowWall.month,
+    nowWall.day,
+    config.horizonDays + 1
+  );
+  return (
+    wallToUtcMs(
+      zoneForCivilDay(config, edge),
+      edge.year,
+      edge.month,
+      edge.day,
+      0,
+      0
+    ) +
+    Math.max(0, overhangMin) * 60_000
+  );
+}
+
 /** Zone whose working hours govern this civil date. */
 export function zoneForCivilDay(
   config: MeetConfig,
@@ -188,28 +238,7 @@ export function availableSlots(
   overhangMin: number = overnightOverhangMin(config)
 ): Array<{ startMs: number; freeMemberKeys: string[] }> {
   const minStartMs = nowMs + config.minNoticeMinutes * 60_000;
-  // Horizon: last bookable civil day in host tz is today + horizonDays.
-  let nowWall = utcToWall(config.hostTimezone, nowMs);
-  const todayZone = zoneForCivilDay(config, nowWall);
-  if (todayZone !== config.hostTimezone) nowWall = utcToWall(todayZone, nowMs);
-  const horizonEdge = addCivilDays(
-    nowWall.year,
-    nowWall.month,
-    nowWall.day,
-    config.horizonDays + 1
-  );
-  // The last bookable day's window is still open past its own midnight when
-  // the window is overnight, so the edge moves with it.
-  const horizonMs =
-    wallToUtcMs(
-      zoneForCivilDay(config, horizonEdge),
-      horizonEdge.year,
-      horizonEdge.month,
-      horizonEdge.day,
-      0,
-      0
-    ) +
-    Math.max(0, overhangMin) * 60_000;
+  const horizonMs = horizonEdgeMs(config, nowMs, overhangMin);
 
   const out: Array<{ startMs: number; freeMemberKeys: string[] }> = [];
   for (const slot of candidates) {

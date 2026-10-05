@@ -15,7 +15,7 @@ const mocks = vi.hoisted(() => {
       durationMinutes: 30,
       slotStepMinutes: 30,
       minNoticeMinutes: 0,
-      horizonDays: 21,
+      horizonDays: 30,
       members,
       quorum: 2,
       eventTitle: "Call with {name}",
@@ -731,5 +731,103 @@ describe("booking delivery and duration invariants", () => {
 
     expect(result).toMatchObject({ ok: false, code: "stale" });
     expect(mocks.sendRescheduled).not.toHaveBeenCalled();
+  });
+
+  describe("the horizon edge", () => {
+    // Today is Wed Aug 12, so the 30-day horizon's last day is Fri Sep 11.
+    // Both members work 08:00 to 02:00, so Friday's window runs on into
+    // Saturday's small hours, and the picker offers those starts. Saturday is
+    // bookable too, so its 08:00 opening is the first start past the edge.
+    const lastNight = "2026-09-12T01:30:00.000Z";
+    const dayAfter = "2026-09-12T08:00:00.000Z";
+    const beyond = {
+      ok: false,
+      code: "slot_unavailable",
+      message: "That time is beyond the booking horizon.",
+    };
+
+    function overnightRow(memberKey: string) {
+      return {
+        memberKey,
+        enabled: true,
+        headline: null,
+        blurb: null,
+        timezone: null,
+        timezoneUntil: null,
+        windowStartMin: 8 * 60,
+        windowEndMin: 26 * 60,
+        bookableWeekdays: [1, 2, 3, 4, 5, 6],
+        durationMinutes: null,
+        slotStepMinutes: null,
+        minNoticeMinutes: null,
+        horizonDays: null,
+        eventTitle: null,
+        eventDescription: null,
+        slackWebhookEnc: null,
+        createdAt: "2026-08-01T00:00:00.000Z",
+        updatedAt: "2026-08-01T00:00:00.000Z",
+      };
+    }
+
+    const book = (start: string, host?: string) =>
+      createBooking({
+        start,
+        host,
+        name: "Booker",
+        email: "booker@example.com",
+        timezone: "UTC",
+      });
+
+    beforeEach(() => {
+      mocks.listPageSettings.mockResolvedValue([
+        overnightRow("one"),
+        overnightRow("two"),
+      ]);
+    });
+
+    it("books the last night's after-midnight start on the team page", async () => {
+      const result = await book(lastNight);
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("booking unexpectedly failed");
+      expect(result.booking.attendeeMemberKeys).toEqual(["one", "two"]);
+    });
+
+    it("refuses a team start past the horizon", async () => {
+      expect(await book(dayAfter)).toMatchObject(beyond);
+      expect(mocks.insertBooking).not.toHaveBeenCalled();
+    });
+
+    it("books the last night's after-midnight start on a personal page", async () => {
+      mocks.getPageSettings.mockResolvedValue(overnightRow("one"));
+
+      const result = await book(lastNight, "one");
+      expect(result.ok).toBe(true);
+      if (!result.ok) throw new Error("booking unexpectedly failed");
+      expect(result.booking.pageKey).toBe("one");
+
+      expect(await book(dayAfter, "one")).toMatchObject(beyond);
+    });
+
+    it("reschedules onto the last night's after-midnight start", async () => {
+      mocks.getBookingByToken.mockResolvedValue(existingBooking());
+
+      const moved = await rescheduleBooking("manage-token", {
+        start: lastNight,
+        timezone: "UTC",
+      });
+      expect(moved.ok).toBe(true);
+    });
+
+    it("refuses a reschedule past the horizon", async () => {
+      mocks.getBookingByToken.mockResolvedValue(existingBooking());
+
+      const refused = await rescheduleBooking("manage-token", {
+        start: dayAfter,
+        timezone: "UTC",
+      });
+      expect(refused).toMatchObject(beyond);
+      expect(mocks.updateBookingTime).not.toHaveBeenCalled();
+    });
   });
 });

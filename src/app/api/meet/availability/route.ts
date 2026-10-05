@@ -78,7 +78,15 @@ export async function GET(request: Request) {
 
   const effective = page ? page.config : config;
 
-  const days = Math.min(36, Math.max(1, parsed.data.days ?? 23));
+  // The picker never sends `days`, so this default IS the window visitors
+  // see, and it has to follow the horizon. Today through today + horizon is
+  // horizonDays + 1 opening days, each already carrying its own overnight
+  // tail. The other two are slack for member zones ahead of the host's, whose
+  // next day opens before the host's edge has passed. Candidates past the
+  // edge are dropped downstream, so the slack costs nothing; a fixed number
+  // silently hid every day past it.
+  const span = effective.horizonDays + 3;
+  const days = Math.min(span, Math.max(1, parsed.data.days ?? span));
 
   // "from" is a civil date in the host timezone, clamped to
   // [today, today + horizon]: the past has no slots and neither does

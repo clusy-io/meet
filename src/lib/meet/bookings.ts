@@ -15,9 +15,9 @@ import {
 import { getHistoricalPage, getPage, teamMemberWindows } from "./pages";
 import { getProvider } from "./providers";
 import { notifyBookingSlack } from "./slackNotify";
-import { slotOnGrid } from "./slots";
+import { horizonEdgeMs, slotOnGrid, widestOverhangMin } from "./slots";
 import { getMeetStore, type MeetStore } from "./store";
-import { addCivilDays, isValidTimezone, utcToWall, wallToUtcMs } from "./tz";
+import { isValidTimezone } from "./tz";
 import type {
   Booking,
   BookingEventRef,
@@ -56,7 +56,9 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 /**
  * Steps 1-2 of booking validation: the instant parses, sits exactly on the
  * host-tz slot grid, respects min notice, and falls inside the horizon
- * (today in host tz + horizonDays, inclusive). Quorum is checked separately.
+ * (today + horizonDays, inclusive, in the zone each day runs on, plus an
+ * overnight window's tail past that day's midnight, as long as the widest
+ * overhang among the grids; see horizonEdgeMs). Quorum is checked separately.
  */
 function validateSlotStart(
   config: MeetConfig,
@@ -71,27 +73,22 @@ function validateSlotStart(
     return invalid("The start time must fall on a whole minute.");
   if (!isValidTimezone(timezone)) return invalid("Unknown timezone.");
 
-  const onGrid = [...grids].some((grid) => slotOnGrid(grid, startMs));
+  // Callers hand in a Map's values() iterator, which only reads once.
+  const gridList = [...grids];
+  const onGrid = gridList.some((grid) => slotOnGrid(grid, startMs));
   if (!onGrid) return unavailable("That time is outside the bookable window.");
 
   const nowMs = Date.now();
   if (startMs < nowMs + config.minNoticeMinutes * 60_000) {
     return unavailable("That time is too soon to book.");
   }
-  const nowWall = utcToWall(config.hostTimezone, nowMs);
-  const edge = addCivilDays(
-    nowWall.year,
-    nowWall.month,
-    nowWall.day,
-    config.horizonDays + 1,
-  );
-  const horizonMs = wallToUtcMs(
-    config.hostTimezone,
-    edge.year,
-    edge.month,
-    edge.day,
-    0,
-    0,
+  // The same edge availability offered against, overnight tail included. A
+  // bare host-tz midnight edge refused the last night's after-midnight starts
+  // that the picker had just shown.
+  const horizonMs = horizonEdgeMs(
+    config,
+    nowMs,
+    widestOverhangMin([config, ...gridList]),
   );
   if (startMs >= horizonMs)
     return unavailable("That time is beyond the booking horizon.");

@@ -77,7 +77,7 @@ Start from `.env.example`, leave `MEET_MOCK_MODE` empty, and set:
 | `MEET_DURATION_MINUTES` | Event duration |
 | `MEET_SLOT_STEP_MINUTES` | Grid step; must be at least the duration |
 | `MEET_MIN_NOTICE_MINUTES` | Minimum advance notice |
-| `MEET_HORIZON_DAYS` | Search horizon, maximum 366 |
+| `MEET_HORIZON_DAYS` | Last bookable day, counted in days from today in the host timezone. Default 30 (about a month), maximum 366. An overnight window's last night stays bookable past that day's midnight |
 | `MEET_EVENT_TITLE` | Event title; `{name}` expands to the booker |
 | `MEET_EVENT_DESCRIPTION` | Description shared with attendees |
 | `MEET_BRAND_NAME` | Name used in lifecycle email |
