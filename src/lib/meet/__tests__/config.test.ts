@@ -129,6 +129,16 @@ describe("Meet config validation", () => {
     ).toThrow("MEET_DURATION_MINUTES");
   });
 
+  it("books up to a month ahead by default and honors an explicit horizon", () => {
+    expect(configured({})().horizonDays).toBe(30);
+    expect(configured({ MEET_HORIZON_DAYS: "21" })().horizonDays).toBe(21);
+    expect(configured({ MEET_HORIZON_DAYS: "366" })().horizonDays).toBe(366);
+  });
+
+  it.each(["-1", "367"])("rejects a horizon of %s days", (value) => {
+    expect(configured({ MEET_HORIZON_DAYS: value })).toThrow("MEET_HORIZON_DAYS");
+  });
+
   it("allows bootstrap quorum above the env roster for later runtime additions", () => {
     expect(configured({ MEET_QUORUM: "4" })().quorum).toBe(4);
   });
