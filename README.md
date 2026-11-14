@@ -25,6 +25,11 @@ calendar-free and inside their local window.
 **A page per person**, alongside the team page. `/<member key>` books that one
 person against their own calendar, with quorum set aside.
 
+**Make my calendar look busy.** Hide some open times so a page never looks
+empty, and give them back as real meetings are booked. Hidden times look like a
+busy person's calendar rather than random holes, stay the same on every
+refresh, and can be previewed live from the admin console before switching on.
+
 **A complete booking lifecycle**: confirmations with ICS attachments, guest
 invites, self-service reschedule and cancel, and 24-hour and 1-hour reminders.
 
@@ -110,6 +115,38 @@ calendar invite.
 Personal pages are public and indexable. An unknown key is an ordinary 404, as
 are the reserved segments (`/admin`, `/manage`, `/api`) and anything else with
 no route of its own.
+
+---
+
+## Make my calendar look busy
+
+A booking page that offers every hour of every day reads as a calendar nobody
+books. Each person can switch on **Make my calendar look busy** for their own
+page, and the team page has its own switch: *automatically hide some open
+times to keep your calendar looking busy; as meetings are booked, hidden times
+become available.*
+
+- **Real meetings count first.** A level (Light, Balanced or Packed) says how
+  booked a day should look, and only the shortfall is hidden. Each booking
+  gives a hidden time back, and a day that is already that busy hides nothing.
+- **It looks like a real calendar.** Days look busiest when they are close
+  (Balanced: about 55% of today taken, easing to about 25% weeks out), with
+  each day nudged a little off that curve. Hidden times are 30, 60 or 90
+  minute blocks that land mostly mid-morning and mid-afternoon.
+- **The same on every refresh.** Every choice is an HMAC of the page and the
+  slot keyed from `MEET_TOKEN_SECRET`, so every server instance hides the same
+  times, nothing moves with the clock during the day, and nobody can work out
+  from this source which taken times are real.
+- **It never costs a booking.** A day keeps at least two of the times it can
+  still be booked at, and booking a hidden time through the API still works,
+  because the host really is free.
+- **See it before you switch it on.** The admin console draws the next five
+  bookable days exactly as visitors will see them, from the page's real
+  calendars, at any level. The public availability API never carries hidden
+  times; only this authenticated preview names them.
+
+The switch is in each person's Availability section in `/admin`, and the team
+page's is on the Availability tab. Both save instantly.
 
 ---
 
@@ -262,6 +299,7 @@ so the admin console can change them without a deploy.
 | `/api/meet/bookings` | Booking lifecycle APIs |
 | `/api/meet/admin/availability` | Authenticated privacy-safe team timeline and shared slots |
 | `/api/meet/admin/pages` | Personal page settings |
+| `/api/meet/admin/look-busy` | "Look busy" switch and live preview, per person or for the team page |
 | `/api/meet/admin/members` | Runtime roster additions, edits, archive and restore |
 | `/api/meet/oauth/*` | Google and Microsoft connection flow |
 | `/api/meet/cron/reminders` | Secret-gated reminder worker |
@@ -282,7 +320,9 @@ npm run build
 npm run check
 ```
 
-The suite covers timezone maths, intervals, slot generation, configuration,
+The suite covers timezone maths, intervals, slot generation, "look busy"
+hiding (the month's shape, meeting-shaped blocks, give-back on booking,
+refresh stability), configuration,
 encryption, storage concurrency, per-page slot isolation, admin availability
 authentication and cross-timezone timeline maths, request origin checks, email
 routing, reminders, Slack payloads and delivery classification, Microsoft

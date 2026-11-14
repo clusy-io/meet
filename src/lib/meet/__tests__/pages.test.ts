@@ -187,6 +187,23 @@ describe("page settings persistence", () => {
     expect(row?.durationMinutes).toBeNull();
     expect(row?.headline).toBe("Ju");
   });
+
+  it("starts a page with looking busy off and keeps the level across other edits", async () => {
+    const store = new MemoryMeetStore();
+    expect((await store.upsertPageSettings("ada", { headline: "Ada" })).lookBusy).toBeNull();
+    await store.upsertPageSettings("ada", { lookBusy: "packed" });
+    await store.upsertPageSettings("ada", { durationMinutes: 45 });
+    expect((await store.getPageSettings("ada"))?.lookBusy).toBe("packed");
+    await store.upsertPageSettings("ada", { lookBusy: null });
+    expect((await store.getPageSettings("ada"))?.lookBusy).toBeNull();
+  });
+
+  it("keeps the team page's level on its own row, apart from every person", async () => {
+    const store = new MemoryMeetStore();
+    await store.upsertPageSettings("", { lookBusy: "light" });
+    expect((await store.getPageSettings(""))?.lookBusy).toBe("light");
+    expect(await store.getPageSettings("ada")).toBeNull();
+  });
 });
 
 describe("effective config never offers a grid it would then refuse", () => {
@@ -207,10 +224,23 @@ describe("effective config never offers a grid it would then refuse", () => {
     horizonDays: null,
     eventTitle: null,
     eventDescription: null,
+    lookBusy: null,
     slackWebhookEnc: null,
     createdAt: "2026-08-12T00:00:00.000Z",
     updatedAt: "2026-08-12T00:00:00.000Z",
     ...over,
+  });
+
+  it("takes looking busy from the page's own level, never from anyone else's", () => {
+    // Even a base config carrying a level does not reach a person who never
+    // asked: their page keeps every free time.
+    const leaky = { ...config, lookBusy: "packed" as const };
+    expect(configForPage(leaky, member, null).lookBusy).toBeNull();
+    expect(configForPage(leaky, member, settings({})).lookBusy).toBeNull();
+    expect(configForPage(config, member, settings({ lookBusy: "light" })).lookBusy).toBe("light");
+    // Junk in a row (an older version, a hand edit) reads as off.
+    const junk = settings({ lookBusy: "maximum" as unknown as PageSettings["lookBusy"] });
+    expect(configForPage(config, member, junk).lookBusy).toBeNull();
   });
 
   it("clamps an inherited slot step up to the page's own duration", () => {

@@ -234,6 +234,13 @@ create table if not exists public.meet_page_settings (
   -- AES-256-GCM (crypto.ts encryptSecret), never plaintext: a webhook URL is a
   -- live posting credential for the channel behind it, and it would otherwise
   -- sit in every database dump.
+  -- "Make my calendar look busy" (lookBusy.ts): how booked this page should
+  -- look, or null for off. Not inherited: the person's own choice. The row
+  -- with member_key '' (the team page's page_key, as in meet_bookings) holds
+  -- the team page's own level.
+  look_busy text
+    constraint meet_page_settings_look_busy_level
+    check (look_busy in ('light', 'balanced', 'packed')),
   slack_webhook_enc text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
@@ -337,6 +344,15 @@ begin
       );
   end if;
 end $$;
+
+-- "Make my calendar look busy" (2026-11-14). Additive and nullable, so
+-- existing rows read as off and the release may go out before or after it:
+-- the store reads a missing column as off and only writes it when a switch
+-- is changed.
+alter table public.meet_page_settings
+  add column if not exists look_busy text
+    constraint meet_page_settings_look_busy_level
+    check (look_busy in ('light', 'balanced', 'packed'));
 
 -- Service-role access only: RLS on with no policies means anon/authenticated
 -- API keys can read nothing; the meet backend uses the service-role key.

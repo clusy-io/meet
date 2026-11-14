@@ -38,6 +38,7 @@ import {
   type TeamAvailabilitySlot,
   type TeamAvailabilityWindow,
 } from "./teamAvailability";
+import { LookBusyControl } from "./LookBusyControl";
 import type { TeamAvailabilityMember, TeamAvailabilityResponse } from "./types";
 
 type Phase = "idle" | "loading" | "ready" | "failed";
@@ -473,6 +474,18 @@ export function TeamAvailabilityView({
           onSelectDate={setSelectedDate}
         />
       </div>
+
+      <div className="mt-6 rounded-2xl border border-hairline bg-paper-raise p-4 shadow-[0_1px_0_hsl(var(--ink)_/_0.025)] sm:p-6">
+        <LookBusyControl
+          level={data.lookBusy ?? null}
+          title="Make the team page look busy"
+          description="Automatically hide some open times on the team page to keep the team calendar looking busy. As meetings are booked, hidden times become available."
+          onSaved={(lookBusy) =>
+            setData((current) => (current ? { ...current, lookBusy } : current))
+          }
+          onUnauthorized={onUnauthorized}
+        />
+      </div>
     </section>
   );
 }
@@ -712,6 +725,14 @@ function DayTimeline({
                     <p className="text-[10px] text-ink-faint">
                       {response.quorum}+ members
                     </p>
+                    {response.lookBusy && (
+                      <p
+                        className="text-[10px] text-ink-faint"
+                        title="The team page looks busy: visitors see some of these openings as taken until the day fills."
+                      >
+                        Looks busy to visitors
+                      </p>
+                    )}
                   </div>
                 </div>
               }
