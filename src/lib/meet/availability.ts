@@ -1,14 +1,17 @@
 import "server-only";
 import { getMeetConfig, type MeetConfig } from "./config";
 import { decryptSecret } from "./crypto";
+import { lookBusyHiddenStarts, lookBusyKey } from "./lookBusy";
+import type { LookBusyLevel } from "./lookBusyLevels";
 import { ensureMockReady } from "./mock";
 import { getEffectiveMeetConfig, getRuntimeMeetConfig } from "./members";
-import { teamMemberWindows } from "./pages";
+import { loadTeamPage } from "./pages";
 import { getProvider } from "./providers";
 import {
   availableSlots,
   candidateSlots,
   candidateSlotsInRange,
+  horizonEdgeMs,
   overnightOverhangMin,
   transitionZones,
   widestOverhangMin,
@@ -21,6 +24,7 @@ import {
   mergeBusy,
   overlapsBusy,
   ProviderAuthError,
+  TEAM_PAGE_KEY,
   type AvailabilityResponse,
   type Booking,
   type BusyInterval,
@@ -262,6 +266,12 @@ export interface MemberBusyTimeline {
   slotStepMinutes: number;
   minNoticeMinutes: number;
   quorum: number;
+  /**
+   * The team page's "look busy" level, or null when off: the public team page
+   * hides some of these openings (lookBusy.ts). The timeline itself always
+   * shows the real ones.
+   */
+  lookBusy: LookBusyLevel | null;
   bookableWeekdays: number[];
   bookableDates: string[];
   members: Array<{
@@ -344,13 +354,14 @@ export async function computeMemberBusyTimeline(
   const toMs = wallToUtcMs(config.hostTimezone, toCivil.year, toCivil.month, toCivil.day, 0, 0);
   if (config.mockMode) await ensureMockReady();
 
-  const windowsPromise = teamMemberWindows(config);
+  const teamPromise = loadTeamPage(config);
   const bookingsPromise = getMeetStore().listConfirmedBookingsInRange(fromMs, toMs);
   bookingsPromise.catch(() => {});
-  const [windows, providerBusy] = await Promise.all([
-    windowsPromise,
+  const [team, providerBusy] = await Promise.all([
+    teamPromise,
     providerBusyByMember(config, fromMs, toMs),
   ]);
+  const windows = team.windows;
   const busyByMember = await withBookingsOverlay(providerBusy, fromMs, toMs, bookingsPromise);
   const paddedFrom = addCivilDays(
     fromCivil.year,
@@ -449,6 +460,7 @@ export async function computeMemberBusyTimeline(
     slotStepMinutes: config.slotStepMinutes,
     minNoticeMinutes: config.minNoticeMinutes,
     quorum: config.quorum,
+    lookBusy: team.lookBusy,
     bookableWeekdays: [...config.bookableWeekdays],
     bookableDates: [...bookableDates].sort(),
     members,
@@ -482,12 +494,48 @@ export async function computeMemberBusyTimeline(
 export async function computeAvailability(
   from: string,
   days: number,
-  options: {
-    requiredMemberKeys?: string[];
-    hostKey?: string;
-    config?: MeetConfig;
-  } = {}
+  options: AvailabilityOptions = {}
 ): Promise<AvailabilityResponse> {
+  return (await computeAvailabilityPlan(from, days, options)).response;
+}
+
+export interface AvailabilityOptions {
+  requiredMemberKeys?: string[];
+  hostKey?: string;
+  config?: MeetConfig;
+  /**
+   * Admin preview only: judge the page as if "look busy" were at this level
+   * (null: off), whatever is stored.
+   */
+  lookBusy?: LookBusyLevel | null;
+}
+
+/**
+ * What "look busy" did to one availability answer: the grid it judged, what
+ * real calendars left open on it, and what it hid. Server-side and admin-only:
+ * `hidden` is exactly what the feature exists to keep from visitors, so it
+ * never goes near the public response.
+ */
+export interface LookBusyPlan {
+  level: LookBusyLevel;
+  /** Page grid starts from midnight today (page zone) to the horizon edge. */
+  grid: number[];
+  /** Grid starts real calendars and bookings leave open, notice aside. */
+  open: Set<number>;
+  hidden: Set<number>;
+  /** The earliest start bookable right now. */
+  bookableFromMs: number;
+}
+
+/**
+ * computeAvailability plus the look-busy plan behind it, for the admin
+ * preview. Public callers use computeAvailability, which drops the plan.
+ */
+export async function computeAvailabilityPlan(
+  from: string,
+  days: number,
+  options: AvailabilityOptions = {}
+): Promise<{ response: AvailabilityResponse; lookBusy: LookBusyPlan | null }> {
   // A supplied config (personal pages and pure tests) already carries the
   // current roster. Rebuild only the team defaults around that roster; without
   // one, load the persisted active roster now rather than using env forever.
@@ -505,7 +553,16 @@ export async function computeAvailability(
   // Fetch and cache the canonical window, never the caller's. A busy interval
   // outside the caller's days simply overlaps none of their candidates, so a
   // wider map is always safe; a narrower one would not be.
-  const memberWindows = await teamMemberWindows(globalConfig);
+  const team = await loadTeamPage(globalConfig);
+  const memberWindows = team.windows;
+  // The team page's level is runtime state on its own settings row; a
+  // personal page's came in on its config (configForPage).
+  const lookBusyLevel =
+    options.lookBusy !== undefined
+      ? options.lookBusy
+      : hostKey === undefined
+        ? team.lookBusy
+        : (config.lookBusy ?? null);
   const canonicalConfigs = [...memberWindows.values(), config];
   const { key: cacheKey, fromMs: windowFromMs, toMs: canonicalToMs } =
     canonicalWindow(config, canonicalConfigs);
@@ -596,25 +653,77 @@ export async function computeAvailability(
   } else {
     candidates = candidateSlotsInRange(config, fromCivil, days);
   }
+  const slotNowMs = Date.now();
   let slots = availableSlots(
     config,
     candidates,
     busyMap,
-    Date.now(),
+    slotNowMs,
     quorum,
     memberSlotSets,
     overhangMin
   );
+
+  let lookBusyPlan: LookBusyPlan | null = null;
+  if (lookBusyLevel) {
+    // "Make my calendar look busy". Judged on the page's own slots, before
+    // the reschedule narrowing below, so a booker moving a call sees the same
+    // page everyone else does.
+    //
+    // The hiding is decided over whole days from midnight today, minimum
+    // notice aside: it must move only with real events and bookings, never
+    // with the clock, or a time a visitor saw at 9:00 could vanish by noon.
+    // The provider fetch and the bookings read already start at that
+    // midnight (canonicalWindow), so the morning that has passed is real data.
+    const today = utcToWall(config.hostTimezone, slotNowMs);
+    const midnightMs = wallToUtcMs(config.hostTimezone, today.year, today.month, today.day, 0, 0);
+    // The edge the read below applies, from the same instant, so the grid and
+    // the open set always cover the same days. Slots past the real edge are
+    // already gone from `slots`.
+    const horizonMs = horizonEdgeMs(config, midnightMs, overhangMin);
+    const open = new Set(
+      availableSlots(
+        { ...config, minNoticeMinutes: 0 },
+        candidates,
+        busyMap,
+        midnightMs,
+        quorum,
+        memberSlotSets,
+        overhangMin
+      ).map((slot) => slot.startMs)
+    );
+    const grid = candidates
+      .map((candidate) => candidate.startMs)
+      .filter((startMs) => startMs >= midnightMs && startMs < horizonMs);
+    const bookableFromMs = slotNowMs + config.minNoticeMinutes * 60_000;
+    const hidden = lookBusyHiddenStarts({
+      grid,
+      open,
+      durationMinutes: config.durationMinutes,
+      slotStepMinutes: config.slotStepMinutes,
+      zone: config.hostTimezone,
+      key: lookBusyKey(hostKey ?? TEAM_PAGE_KEY, config.tokenSecret),
+      level: lookBusyLevel,
+      nowMs: slotNowMs,
+      bookableFromMs,
+    });
+    if (hidden.size > 0) slots = slots.filter((slot) => !hidden.has(slot.startMs));
+    lookBusyPlan = { level: lookBusyLevel, grid, open, hidden, bookableFromMs };
+  }
+
   const required = requiredMemberKeys ? [...requiredMemberKeys] : [];
   if (required.length > 0) {
     slots = slots.filter((s) => required.every((key) => s.freeMemberKeys.includes(key)));
   }
 
   return {
-    slots: slots.map((s) => new Date(s.startMs).toISOString()),
-    durationMinutes: config.durationMinutes,
-    hostTimezone: config.hostTimezone,
-    minNoticeMinutes: config.minNoticeMinutes,
+    response: {
+      slots: slots.map((s) => new Date(s.startMs).toISOString()),
+      durationMinutes: config.durationMinutes,
+      hostTimezone: config.hostTimezone,
+      minNoticeMinutes: config.minNoticeMinutes,
+    },
+    lookBusy: lookBusyPlan,
   };
 }
 

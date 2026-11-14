@@ -72,6 +72,9 @@ export async function GET(request: Request) {
         enabled: page.enabled,
         headline: stored?.headline ?? null,
         blurb: stored?.blurb ?? null,
+        // The page's own "look busy" level; never inherited, so it sits
+        // outside the inherited/effective/overrides triple below.
+        lookBusy: page.config.lookBusy ?? null,
         // Personal pages generate host-specific invite copy even without a
         // stored row. Expose that baseline so inherited labels and the live
         // preview describe the real booking page.

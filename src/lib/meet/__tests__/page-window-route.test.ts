@@ -147,3 +147,22 @@ describe("booking-page hours", () => {
     expect(mocks.upsertPageSettings).not.toHaveBeenCalled();
   });
 });
+
+describe("the look-busy level", () => {
+  it("stores a level, or null for off, touching nothing else", async () => {
+    const { status } = await patch({ lookBusy: "balanced" });
+    expect(status).toBe(200);
+    expect(mocks.upsertPageSettings).toHaveBeenCalledWith("ava", { lookBusy: "balanced" });
+
+    await patch({ lookBusy: null });
+    expect(mocks.upsertPageSettings).toHaveBeenLastCalledWith("ava", { lookBusy: null });
+  });
+
+  it("rejects anything but a known level", async () => {
+    for (const value of [true, "on", "maximum", 1]) {
+      const { status } = await patch({ lookBusy: value });
+      expect(status).toBe(400);
+    }
+    expect(mocks.upsertPageSettings).not.toHaveBeenCalled();
+  });
+});

@@ -1,3 +1,4 @@
+import type { LookBusyLevel } from "@/lib/meet/lookBusyLevels";
 import type {
   CalendarProviderId,
   Member,
@@ -71,6 +72,8 @@ export interface PersonalPage {
   /** Stored headline override; older rows may contain only the member name. */
   headline: string | null;
   blurb: string | null;
+  /** “Make my calendar look busy” level, or null when off. */
+  lookBusy: LookBusyLevel | null;
   /** The host-specific values used when every override is cleared. */
   inherited: {
     /** Permanent/target IANA zone for this host's working hours. */
@@ -184,6 +187,11 @@ export interface TeamAvailabilityResponse {
   slotStepMinutes: number;
   minNoticeMinutes: number;
   quorum: number;
+  /**
+   * The team page's “look busy” level (null: off): the public team page hides
+   * some of these openings. Optional so an older response reads as off.
+   */
+  lookBusy?: LookBusyLevel | null;
   bookableWeekdays: number[];
   /** Host-timezone dates with at least one eligible member start. */
   bookableDates: string[];
@@ -194,3 +202,46 @@ export interface TeamAvailabilityResponse {
 
 export type AdminWorkspaceView =
   "schedule" | "availability" | "members" | "calendars";
+
+/** One time on the look-busy preview, as the admin sees it. */
+export type LookBusySlotState = "busy" | "hidden" | "open";
+
+export interface LookBusyPreviewDay {
+  /** Civil date in the page's zone. */
+  date: string;
+  slots: Array<{
+    start: string;
+    /** Minutes from the date's midnight in the page's zone, for the axis. */
+    minute: number;
+    state: LookBusySlotState;
+  }>;
+}
+
+export interface LookBusyCounts {
+  /** Free times visitors see. */
+  visible: number;
+  /** Free times kept off the page for now. */
+  hidden: number;
+  /** Times real events and bookings already take. */
+  busy: number;
+}
+
+/** GET /api/meet/admin/look-busy: the page as visitors would see it. */
+export interface LookBusyPreview {
+  /** Member key, or null for the team page. */
+  host: string | null;
+  /** The level this preview was judged at. */
+  level: LookBusyLevel;
+  /** The level stored for the page now, null when off. */
+  storedLevel: LookBusyLevel | null;
+  /** Public path of the page, e.g. /ju. */
+  path: string;
+  hostTimezone: string;
+  durationMinutes: number;
+  /** The next few days that have bookable times. */
+  days: LookBusyPreviewDay[];
+  /** Totals over `days`. */
+  next: LookBusyCounts;
+  /** Totals over the whole booking horizon. */
+  horizon: LookBusyCounts;
+}

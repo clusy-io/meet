@@ -33,6 +33,12 @@ before the release keeps the console from rejecting a window the new code
 would accept. The focused migration is at
 [`migrations/2026-09-20-overnight-booking-windows.sql`](migrations/2026-09-20-overnight-booking-windows.sql).
 
+"Make my calendar look busy" adds a nullable `meet_page_settings.look_busy`
+level. Every existing row reads as off, and the store reads a missing column
+as off, so this one is also safe in either order; until it exists, only saving
+a look-busy switch fails. The focused migration is at
+[`migrations/2026-11-14-look-busy.sql`](migrations/2026-11-14-look-busy.sql).
+
 ## 2. Google OAuth
 
 Create a Web application in Google Cloud and configure:

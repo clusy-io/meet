@@ -6,6 +6,16 @@
  * whole feature stays extractable as a standalone open-source package.
  */
 
+import type { LookBusyLevel } from "./lookBusyLevels";
+
+/**
+ * The meet_page_settings row that holds the TEAM page's own settings rather
+ * than a person's: the same "" the bookings table uses as the team page's
+ * page_key. No member can have this key (MEET_MEMBERS and the admin both
+ * refuse an empty one), and every reader that walks the roster skips it.
+ */
+export const TEAM_PAGE_KEY = "";
+
 /** A person whose calendars gate availability (e.g. the three founders). */
 export interface Member {
   /** Stable key used in DB rows and config, e.g. "ava". */
@@ -84,6 +94,13 @@ export interface PageSettings {
   horizonDays: number | null;
   eventTitle: string | null;
   eventDescription: string | null;
+  /**
+   * "Make my calendar look busy": how booked this page should look, or null
+   * for off (lookBusy.ts). Unlike the fields above, null does NOT inherit:
+   * it is this person's own choice about their own calendar, so the team
+   * page's switch (the TEAM_PAGE_KEY row) never turns it on for them.
+   */
+  lookBusy: LookBusyLevel | null;
   /**
    * Slack Incoming Webhook for this page, AES-256-GCM encrypted at rest.
    * Null falls back to the team-wide webhook.

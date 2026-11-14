@@ -20,6 +20,7 @@ import {
   Clock3,
   Copy,
   Eye,
+  EyeOff,
   Globe2,
   LoaderCircle,
   LockKeyhole,
@@ -41,6 +42,7 @@ import {
   parseClockToMinutes,
   windowMinutesToClock,
 } from "@/lib/meet/tz";
+import { HIDDEN_HATCH, LookBusyControl } from "./LookBusyControl";
 import type { PersonalPage, PersonalPagesResponse } from "./types";
 
 const FOCUS_RING =
@@ -1820,6 +1822,9 @@ function BookingPageEditor({
     draft.minNoticeMinutes,
     draft.horizonDays,
     draft.bookableWeekdays,
+    // Saved the moment it is switched (LookBusyControl), so the page's own
+    // value is the truth here, not the draft.
+    page.lookBusy ?? "",
     draft.eventTitle,
     draft.eventDescription,
     draft.headline,
@@ -2043,6 +2048,7 @@ function BookingPageEditor({
         minNoticeMinutes: null,
         horizonDays: null,
         bookableWeekdays: null,
+        lookBusy: null,
         eventTitle: null,
         eventDescription: null,
         slackWebhookUrl: null,
@@ -2293,8 +2299,9 @@ function BookingPageEditor({
                     </p>
                     <p className="mt-1 text-xs leading-5 text-ink-mute">
                       This clears page copy, timezone and availability
-                      overrides, invite copy, and the personal Slack
-                      destination. The live status will not change.
+                      overrides, turns off looking busy, and clears invite
+                      copy and the personal Slack destination. The live
+                      status will not change.
                     </p>
                     <div className="mt-3 flex gap-2">
                       <button
@@ -2738,6 +2745,17 @@ function BookingPageEditor({
                     suffix="days"
                     inputMode="numeric"
                     onChange={(value) => update("horizonDays", value)}
+                  />
+                </div>
+
+                <div className="mt-8 border-t border-hairline pt-6">
+                  <LookBusyControl
+                    host={page.memberKey}
+                    level={page.lookBusy}
+                    title="Make my calendar look busy"
+                    description="Automatically hide some open times to keep your calendar looking busy. As meetings are booked, hidden times become available."
+                    onSaved={(lookBusy) => onPagePatch(page.memberKey, { lookBusy })}
+                    onUnauthorized={onUnauthorized}
                   />
                 </div>
               </EditorSection>
@@ -3302,15 +3320,29 @@ function BookingPagePreview({
                 : "Weekend dates are closed"}
             </p>
             <div className="mt-3 grid grid-cols-2 gap-1.5">
-              {sampleSlotTimes(preview).map((time, index) => (
-                <span
-                  key={`${time}-${index}`}
-                  className="rounded-md border border-hairline bg-paper-raise px-2 py-1.5 text-center text-[9px] text-ink-mute"
-                >
-                  {time}
-                </span>
-              ))}
+              {sampleSlotTimes(preview).map((time, index) => {
+                // With look busy on, show the admin which kind of time a
+                // visitor would not see. Visitors get no such cell: on the
+                // real page a hidden time is simply absent, like a booked one.
+                const hidden = page.lookBusy !== null && index === 1;
+                return (
+                  <span
+                    key={`${time}-${index}`}
+                    style={hidden ? HIDDEN_HATCH : undefined}
+                    className={`rounded-md border px-2 py-1.5 text-center text-[9px] motion-safe:transition-colors ${hidden ? "border-dashed border-hairline-strong text-ink-faint line-through" : "border-hairline bg-paper-raise text-ink-mute"}`}
+                  >
+                    {time}
+                    {hidden && <span className="sr-only"> (hidden)</span>}
+                  </span>
+                );
+              })}
             </div>
+            {page.lookBusy !== null && (
+              <p className="mt-2 flex items-center gap-1 text-[9px] text-ink-faint">
+                <EyeOff className="h-2.5 w-2.5" aria-hidden />
+                Some open times hidden until the day fills
+              </p>
+            )}
           </div>
           <p className="mt-3 flex items-center justify-center gap-1 text-[9px] text-ink-faint">
             <Globe2 className="h-2.5 w-2.5" />{" "}

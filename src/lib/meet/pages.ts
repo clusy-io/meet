@@ -9,7 +9,8 @@ import {
   getRuntimeMeetConfig,
 } from "./members";
 import { getMeetStore } from "./store";
-import type { Member, PageSettings } from "./types";
+import { parseLookBusyLevel, type LookBusyLevel } from "./lookBusyLevels";
+import { TEAM_PAGE_KEY, type Member, type PageSettings } from "./types";
 import { isValidTimezone, normalizeBookingWindow, parseCivilDate } from "./tz";
 
 /**
@@ -77,6 +78,12 @@ export function configForPage(
     // A personal page is booked when its one owner is free. This is why the
     // page can reuse availableSlots unchanged.
     quorum: 1,
+    // The owner's own "look busy" level, whatever the team page does: the
+    // team level is the company's choice about its page, and must not hide
+    // times on a person's page they never asked to hide. Parsed again, like
+    // every settings read: a row from an older version or edited by hand
+    // must read as off, never reach the hiding as junk.
+    lookBusy: parseLookBusyLevel(settings?.lookBusy),
   };
   // A personal call is not a call with the company. The global default
   // ("Clusy <> {name}") reads wrong in the invite the host themselves
@@ -168,14 +175,30 @@ export function memberWindowConfig(
 export async function teamMemberWindows(
   base: MeetConfig
 ): Promise<Map<string, MeetConfig>> {
+  return (await loadTeamPage(base)).windows;
+}
+
+/**
+ * The team page's runtime state from one settings read: every member's
+ * window (teamMemberWindows) and the team page's own "look busy" level, which
+ * lives on the TEAM_PAGE_KEY row so it can change from /admin without a
+ * deploy.
+ */
+export async function loadTeamPage(base: MeetConfig): Promise<{
+  windows: Map<string, MeetConfig>;
+  lookBusy: LookBusyLevel | null;
+}> {
   const rows = await getMeetStore().listPageSettings();
   const byKey = new Map(rows.map((row) => [row.memberKey, row]));
-  return new Map(
-    base.members.map((member) => [
-      member.key,
-      memberWindowConfig(base, byKey.get(member.key) ?? null),
-    ])
-  );
+  return {
+    windows: new Map(
+      base.members.map((member) => [
+        member.key,
+        memberWindowConfig(base, byKey.get(member.key) ?? null),
+      ])
+    ),
+    lookBusy: parseLookBusyLevel(byKey.get(TEAM_PAGE_KEY)?.lookBusy),
+  };
 }
 
 function toPage(base: MeetConfig, member: Member, settings: PageSettings | null): MeetPage {

@@ -33,7 +33,7 @@ const page = (memberKey: string, timezone: string) => ({
   memberKey, enabled: true, headline: null, blurb: null, timezone, timezoneUntil: null,
   windowStartMin: 9 * 60, windowEndMin: 11 * 60, bookableWeekdays: [1, 2, 3, 4, 5],
   durationMinutes: null, slotStepMinutes: null, minNoticeMinutes: null, horizonDays: null,
-  eventTitle: null, eventDescription: null, slackWebhookEnc: null,
+  eventTitle: null, eventDescription: null, lookBusy: null, slackWebhookEnc: null,
   createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
 });
 

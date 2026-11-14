@@ -1,5 +1,6 @@
 import "server-only";
 import { isValidTimezone, normalizeBookingWindow, parseCivilDate } from "./tz";
+import type { LookBusyLevel } from "./lookBusyLevels";
 import type { Member } from "./types";
 
 /**
@@ -42,6 +43,14 @@ export interface MeetConfig {
   members: Member[];
   /** Slot is shown when at least this many members are free. */
   quorum: number;
+  /**
+   * "Make my calendar look busy" for a personal page: how booked it should
+   * look, or null/absent for off (lookBusy.ts). Set by configForPage from the
+   * page's own row. The team page's level is not here: it is runtime state
+   * (the TEAM_PAGE_KEY row) read per request by the availability service,
+   * never part of the memoized env config.
+   */
+  lookBusy?: LookBusyLevel | null;
   /** Event copy. */
   eventTitle: string;
   eventDescription: string;

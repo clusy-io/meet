@@ -4,6 +4,7 @@ import { requireAdmin } from "@/lib/meet/admin";
 import { invalidateAvailabilityCache } from "@/lib/meet/availability";
 import { getMeetConfig } from "@/lib/meet/config";
 import { encryptSecret } from "@/lib/meet/crypto";
+import { LOOK_BUSY_LEVELS } from "@/lib/meet/lookBusyLevels";
 import { ensureMockReady } from "@/lib/meet/mock";
 import { getEffectiveMeetConfig } from "@/lib/meet/members";
 import { hasTrustedMutationOrigin } from "@/lib/meet/requestSecurity";
@@ -48,6 +49,8 @@ const patchSchema = z.object({
   horizonDays: z.number().int().min(0).max(366).nullable().optional(),
   eventTitle: z.string().trim().max(200).nullable().optional(),
   eventDescription: z.string().trim().max(2000).nullable().optional(),
+  /** "Make my calendar look busy" level; null is off. Nothing to inherit. */
+  lookBusy: z.enum(LOOK_BUSY_LEVELS).nullable().optional(),
   /** null clears the stored webhook; a value replaces it. */
   slackWebhookUrl: z.string().max(512).nullable().optional(),
 });
@@ -131,6 +134,7 @@ export async function PATCH(request: Request, { params }: RouteContext) {
   if (body.horizonDays !== undefined) patch.horizonDays = body.horizonDays;
   if (body.eventTitle !== undefined) patch.eventTitle = body.eventTitle || null;
   if (body.eventDescription !== undefined) patch.eventDescription = body.eventDescription || null;
+  if (body.lookBusy !== undefined) patch.lookBusy = body.lookBusy;
 
   if (body.timezoneUntil !== undefined) {
     if (body.timezoneUntil === null) {

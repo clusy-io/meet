@@ -1,6 +1,7 @@
 import "server-only";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { getMeetConfig } from "./config";
+import { parseLookBusyLevel } from "./lookBusyLevels";
 import type {
   Booking,
   CalendarAccount,
@@ -195,6 +196,12 @@ interface PageSettingsRow {
   horizon_days: number | null;
   event_title: string | null;
   event_description: string | null;
+  /**
+   * Optional in the row type: `select("*")` against a table that has not had
+   * the 2026-11-14 column added yet simply lacks it, and that must read as
+   * off rather than break every page.
+   */
+  look_busy?: string | null;
   slack_webhook_enc: string | null;
   created_at: string;
   updated_at: string;
@@ -234,6 +241,9 @@ function pageSettingsFromRow(r: PageSettingsRow): PageSettings {
     horizonDays: r.horizon_days,
     eventTitle: r.event_title,
     eventDescription: r.event_description,
+    // Anything but a known level, a missing column included, reads as off:
+    // the safe side of a bad value is a page that shows every free time.
+    lookBusy: parseLookBusyLevel(r.look_busy),
     slackWebhookEnc: r.slack_webhook_enc,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -266,6 +276,7 @@ function pageSettingsPatchToRow(
   if (patch.horizonDays !== undefined) row.horizon_days = patch.horizonDays;
   if (patch.eventTitle !== undefined) row.event_title = patch.eventTitle;
   if (patch.eventDescription !== undefined) row.event_description = patch.eventDescription;
+  if (patch.lookBusy !== undefined) row.look_busy = patch.lookBusy;
   if (patch.slackWebhookEnc !== undefined) row.slack_webhook_enc = patch.slackWebhookEnc;
   return row;
 }
@@ -1013,6 +1024,7 @@ export class MemoryMeetStore implements MeetStore {
       horizonDays: null,
       eventTitle: null,
       eventDescription: null,
+      lookBusy: null,
       slackWebhookEnc: null,
       createdAt: now,
       updatedAt: now,
