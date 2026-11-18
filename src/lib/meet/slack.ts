@@ -2,6 +2,8 @@ import "server-only";
 
 import { createHmac } from "crypto";
 import { getMeetConfig } from "./config";
+import { specialMeetingNoun } from "./meetingTypes";
+import type { MeetingType } from "./types";
 
 /**
  * meet — Slack notifications.
@@ -46,7 +48,8 @@ export interface MeetingSlackEvent {
   endAt: string;
   /** Only on "rescheduled". */
   previousStartAt?: string;
-  /** Display name of the person the call is with; null for a team booking. */
+  meetingType?: MeetingType | null;
+  /** Display name of the assigned hosts, or null for a regular team booking. */
   hostName: string | null;
   /** Who booked it. Untrusted: escaped before it reaches the payload. */
   bookerName: string;
@@ -285,7 +288,10 @@ export function buildMeetingSlackPayload(
   // Deliberately brand-free: this builder stays pure so it can be exercised
   // without a full runtime config, and the host name already carries whatever
   // specificity a personal booking needs.
-  const subject = event.hostName ? `call with ${event.hostName}` : "intro call";
+  const labelForType = specialMeetingNoun(event.meetingType);
+  const subject = event.hostName
+    ? `${labelForType ?? "call"} with ${event.hostName}`
+    : labelForType ?? "intro call";
   const booker = escapeMrkdwn(event.bookerName) || "Someone";
   const current = formatInstant(event.startAt, hostTimezone);
   const minutes = Math.max(

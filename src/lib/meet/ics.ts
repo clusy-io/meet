@@ -1,4 +1,5 @@
 import { getMeetConfig } from "./config";
+import { meetingTypeEventCopy } from "./meetingTypes";
 import type { Booking } from "./types";
 
 /**
@@ -48,10 +49,11 @@ function foldLine(line: string): string {
 export function buildIcs(booking: Booking, method: "REQUEST" | "CANCEL"): string {
   const config = getMeetConfig();
   const uidHost = new URL(config.siteOrigin).hostname;
-  const summary = config.eventTitle.split("{name}").join(booking.name);
+  const event = booking.meetingType ? meetingTypeEventCopy(config, booking.meetingType) : config;
+  const summary = event.eventTitle.split("{name}").join(booking.name);
   // ICS attachments are sent to both the booker and the team. The management
   // URL is a bearer capability, so it belongs only in the booker's email body.
-  const description = [config.eventDescription, booking.meetingUrl ? `Join: ${booking.meetingUrl}` : null]
+  const description = [event.eventDescription, booking.meetingUrl ? `Join: ${booking.meetingUrl}` : null]
     .filter((line): line is string => line !== null)
     .join("\n");
 

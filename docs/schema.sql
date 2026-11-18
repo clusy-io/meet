@@ -94,7 +94,8 @@ create table if not exists public.meet_bookings (
   -- NULLs compare as DISTINCT in a unique index, so a nullable column would
   -- let two confirmed team bookings share one start_at and quietly destroy the
   -- race guarantee the index exists to provide.
-  page_key text not null default ''
+  page_key text not null default '',
+  meeting_type text check (meeting_type in ('chat', 'meeting', 'investor'))
 );
 
 -- Upgrade earlier Meet installations. CREATE TABLE IF NOT EXISTS does not add
@@ -131,7 +132,9 @@ end $$;
 -- PG 11+, no rewrite). Keep the default until the previous deployment has
 -- drained: during a rolling deploy the old code still inserts without it.
 alter table public.meet_bookings
-  add column if not exists page_key text not null default '';
+  add column if not exists page_key text not null default '',
+  -- Existing bookings keep NULL and their original page behavior.
+  add column if not exists meeting_type text check (meeting_type in ('chat', 'meeting', 'investor'));
 
 -- One confirmed booking per (page, slot start). Two DIFFERENT pages may hold
 -- the SAME instant — that is the entire point of per-person pages, and the old
@@ -189,6 +192,50 @@ begin
       add constraint meet_bookings_no_overlap
       exclude using gist (page_key with =, tstzrange(start_at, end_at, '[)') with &&)
       where (status = 'confirmed');
+  end if;
+end $$;
+
+-- Represent each host key as a singleton range so GiST can test set overlap.
+-- Binary ordering preserves the application's exact member-key comparison.
+do $$
+begin
+  if to_regtype('public.meet_key_range') is null then
+    create type public.meet_key_range as range (
+      subtype = text, collation = "C", multirange_type_name = public.meet_key_multirange
+    );
+  end if;
+end $$;
+
+create or replace function public.meet_booking_host_ranges(keys jsonb)
+returns public.meet_key_multirange
+language sql immutable strict parallel safe
+set search_path = pg_catalog
+as $$
+  select case when keys = '[]'::jsonb then
+    -- An unassigned legacy booking occupies every host in availability.
+    public.meet_key_multirange(public.meet_key_range(null, null))
+  else
+    (select range_agg(public.meet_key_range(key, key, '[]'))
+     from jsonb_array_elements_text(keys) as hosts(key))
+  end
+$$;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'meet_bookings_investor_host_overlap'
+      and conrelid = 'public.meet_bookings'::regclass
+  ) then
+    alter table public.meet_bookings
+      add constraint meet_bookings_investor_host_overlap exclude using gist (
+        tstzrange(start_at, end_at, '[)') with &&,
+        public.meet_booking_host_ranges(attendee_member_keys) with &&,
+        -- Distinct non-Investor rows have disjoint IDs. Investor spans all
+        -- IDs so a clash on time and host rejects a write in either order.
+        (case when meeting_type = 'investor' then public.meet_key_range(null, null)
+              else public.meet_key_range(id::text, id::text, '[]') end) with &&
+      ) where (status = 'confirmed');
   end if;
 end $$;
 

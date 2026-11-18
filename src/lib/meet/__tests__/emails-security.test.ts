@@ -18,7 +18,12 @@ vi.mock("resend", () => ({
 
 import { bookingEventDescription } from "@/lib/meet/bookings";
 import { __resetMeetConfigCache, getMeetConfig } from "@/lib/meet/config";
-import { sendBookingConfirmed } from "@/lib/meet/emails";
+import {
+  sendBookingCancelled,
+  sendBookingConfirmed,
+  sendBookingReminder,
+  sendBookingRescheduled,
+} from "@/lib/meet/emails";
 import { buildIcs } from "@/lib/meet/ics";
 import type { Booking, Member } from "@/lib/meet/types";
 
@@ -100,6 +105,59 @@ afterEach(() => {
   }
   __resetMeetConfigCache();
   vi.restoreAllMocks();
+});
+
+describe("meeting-type notices", () => {
+  it.each([
+    { meetingType: "chat" as const, hosts: [MEMBERS[0]], durationMinutes: 15, noun: "chat" },
+    { meetingType: "investor" as const, hosts: MEMBERS, durationMinutes: 30, noun: "investor" },
+  ])("uses the assigned hosts for $meetingType lifecycle mail", async ({ meetingType, hosts, durationMinutes, noun }) => {
+    const booking = {
+      ...BOOKING,
+      meetingType,
+      durationMinutes,
+      endAt: new Date(Date.parse(BOOKING.startAt) + durationMinutes * 60_000).toISOString(),
+      attendeeMemberKeys: hosts.map((member) => member.key),
+    };
+    const config = {
+      ...getMeetConfig(),
+      members: [...MEMBERS, { key: "three", name: "Three", email: "three@example.com" }],
+      investor: { startDate: "2026-08-01", endDate: "2026-08-31", requiredMember: "one", partners: ["two"] },
+    };
+    await sendBookingConfirmed(booking, hosts, { config });
+    await sendBookingRescheduled(booking, hosts, BOOKING.startAt, config);
+    await sendBookingReminder(booking, config.members, "1h", "in one hour", config);
+    await sendBookingCancelled(booking, hosts, config);
+
+    expect(resendState.calls).toHaveLength(8);
+    const internal = resendState.calls.filter((mail) => mail.replyTo === BOOKING.email);
+    expect(internal).toHaveLength(4);
+    for (const mail of internal) expect(mail.to).toEqual(hosts.map((member) => member.email));
+    expect(resendState.calls[0].subject).toMatch(new RegExp(noun, "i"));
+    expect(resendState.calls[0].text).toContain(`With: ${hosts.map((member) => member.name).join(" and ")}`);
+    const [invite] = resendState.calls[0].attachments as Array<{ content: Buffer }>;
+    expect(invite.content.toString()).toMatch(new RegExp(`SUMMARY:.*${noun}`, "i"));
+    expect(resendState.calls[6].text).toContain(`https://meet.example.com/book/${meetingType}`);
+  });
+
+  it("preserves the investor invite and links to the selection page after the type is disabled", async () => {
+    await sendBookingCancelled({ ...BOOKING, meetingType: "investor" }, MEMBERS, {
+      ...getMeetConfig(),
+      investor: undefined,
+    });
+    const mail = resendState.calls[0];
+    expect(mail.subject).toMatch(/investor/i);
+    expect(mail.text).toContain("Book again:\nhttps://meet.example.com");
+    expect(mail.text).not.toContain("/book/investor");
+    const [invite] = mail.attachments as Array<{ content: Buffer }>;
+    expect(invite.content.toString()).toMatch(/SUMMARY:.*investor/i);
+  });
+
+  it("does not substitute unrelated hosts when none of the assigned hosts can be resolved", async () => {
+    const booking = { ...BOOKING, meetingType: "investor" as const, attendeeMemberKeys: ["archived"] };
+    await sendBookingReminder(booking, MEMBERS, "1h", "in one hour");
+    expect(resendState.calls.map((mail) => mail.to)).toEqual([[BOOKING.email]]);
+  });
 });
 
 describe("management-link containment", () => {

@@ -28,6 +28,7 @@ import {
   Video,
   X,
 } from "lucide-react";
+import { meetingTypeLabel } from "@/lib/meet/meetingTypes";
 import type { AdminBooking, BookingsResponse } from "./types";
 import {
   bookingNeedsAttention,
@@ -649,6 +650,7 @@ function NextUpCard({
       <div className="mt-5 grid min-w-0 gap-5 md:grid-cols-[minmax(0,1fr)_auto] md:items-end">
         <div className="min-w-0">
           <p className="text-sm font-medium text-paper/60">
+            {booking.meetingType && `${meetingTypeLabel(booking.meetingType)} · `}
             {formatShortDate(booking.startAt, displayTimezone)}
           </p>
           <p className="mt-1 flex min-w-0 flex-wrap items-baseline gap-x-2 font-serif-display text-[clamp(2rem,8vw,3rem)] font-bold leading-tight tracking-[-0.045em] text-paper sm:text-5xl">
@@ -864,6 +866,9 @@ function MeetingRow({
               >
                 {booking.name}
               </h3>
+              {booking.meetingType && (
+                <span className="text-xs text-ink-mute">{meetingTypeLabel(booking.meetingType)}</span>
+              )}
               {inProgress && (
                 <span
                   className={`${CHIP} border-status-ok/25 bg-status-ok/5 text-status-ok`}

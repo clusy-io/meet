@@ -17,8 +17,8 @@ export const dynamic = "force-dynamic";
  * Reminder dispatch, invoked by Vercel Cron every 15 minutes (vercel.json).
  *
  * Routing contract: the booker is reminded at their own address in their own
- * timezone; the team copy goes to every active member, with the attending
- * ones named in the body (see teamRecipients in emails.ts).
+ * timezone. Chats and investor meetings notify their assigned hosts. Regular
+ * team meetings notify the roster, and personal bookings notify the page owner.
  * Delivery happens before remindersSent is recorded: a provider failure must
  * leave the reminder eligible for the next cron run rather than suppressing it
  * forever. A reschedule clears remindersSent and re-arms both kinds.

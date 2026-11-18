@@ -159,6 +159,7 @@ interface MemberRow {
 interface BookingRow {
   id: string;
   page_key: string;
+  meeting_type: Booking["meetingType"] | null;
   start_at: string;
   end_at: string;
   duration_minutes: number;
@@ -301,6 +302,7 @@ function bookingFromRow(r: BookingRow): Booking {
     // Rows written before personal pages existed have no page_key; they are
     // all team bookings, which is what "" means.
     pageKey: r.page_key ?? "",
+    meetingType: r.meeting_type ?? undefined,
     startAt: r.start_at,
     endAt: r.end_at,
     durationMinutes: r.duration_minutes,
@@ -326,6 +328,7 @@ function bookingToRow(b: Booking): BookingRow {
   return {
     id: b.id,
     page_key: b.pageKey,
+    meeting_type: b.meetingType ?? null,
     start_at: b.startAt,
     end_at: b.endAt,
     duration_minutes: b.durationMinutes,
@@ -360,7 +363,8 @@ function isSlotConflict(error: { message: string; details?: string | null }): bo
     // 23P01 comes from the overlap constraint, whose name matches neither
     // index. Without it a real overlap throws and the visitor gets a 500
     // instead of "that time was just booked".
-    detail.includes("meet_bookings_no_overlap")
+    detail.includes("meet_bookings_no_overlap") ||
+    detail.includes("meet_bookings_investor_host_overlap")
   );
 }
 
@@ -789,7 +793,8 @@ class SupabaseMeetStore implements MeetStore {
         .select("id", { count: "exact", head: true })
         .eq("status", "confirmed")
         .gt("end_at", now)
-        .eq("page_key", ""),
+        .eq("page_key", "")
+        .or("meeting_type.is.null,meeting_type.eq.meeting"),
     ]);
     if (page.error) {
       throw new Error(`meet_bookings member-page preflight failed: ${page.error.message}`);
@@ -1034,17 +1039,24 @@ export class MemoryMeetStore implements MeetStore {
     return { ...created };
   }
 
+  /** Mirror the page-wide and cross-page Investor exclusions in PostgreSQL. */
+  private slotTaken(booking: Booking, ignoreId?: string): boolean {
+    if (booking.status !== "confirmed") return false;
+    const start = Date.parse(booking.startAt);
+    const end = Date.parse(booking.endAt);
+    return this.bookings.some((other) => {
+      if (other.id === ignoreId || other.status !== "confirmed") return false;
+      if (Date.parse(other.endAt) <= start || end <= Date.parse(other.startAt)) return false;
+      if (other.pageKey === booking.pageKey) return true;
+      if (other.meetingType !== "investor" && booking.meetingType !== "investor") return false;
+      // An unassigned historical booking occupies every member's calendar.
+      return other.attendeeMemberKeys.length === 0 || booking.attendeeMemberKeys.length === 0 ||
+        other.attendeeMemberKeys.some((key) => booking.attendeeMemberKeys.includes(key));
+    });
+  }
+
   async insertBooking(booking: Booking): Promise<InsertBookingResult> {
-    // Hand-written mirror of meet_bookings_confirmed_page_slot. If this drifts
-    // from the SQL index, mock mode and the whole test suite keep proving a
-    // rule production does not have.
-    const clash = this.bookings.some(
-      (b) =>
-        b.status === "confirmed" &&
-        b.startAt === booking.startAt &&
-        b.pageKey === booking.pageKey
-    );
-    if (clash) return { ok: false, reason: "slot_taken" };
+    if (this.slotTaken(booking)) return { ok: false, reason: "slot_taken" };
     this.bookings.push({ ...booking });
     return { ok: true };
   }
@@ -1055,6 +1067,9 @@ export class MemoryMeetStore implements MeetStore {
 
   async updateBooking(id: string, patch: Partial<Booking>): Promise<void> {
     const booking = this.bookings.find((b) => b.id === id);
+    if (booking && this.slotTaken({ ...booking, ...patch }, id)) {
+      throw new Error("meet_bookings update failed: that time is already booked");
+    }
     if (booking) Object.assign(booking, patch);
   }
 
@@ -1073,14 +1088,9 @@ export class MemoryMeetStore implements MeetStore {
     if (booking.startAt !== expectedStartAt) {
       return { ok: false, reason: "stale" };
     }
-    const clash = this.bookings.some(
-      (b) =>
-        b.id !== id &&
-        b.status === "confirmed" &&
-        b.startAt === startAt &&
-        b.pageKey === booking.pageKey
-    );
-    if (clash) return { ok: false, reason: "slot_taken" };
+    if (this.slotTaken({ ...booking, startAt, endAt }, id)) {
+      return { ok: false, reason: "slot_taken" };
+    }
     booking.startAt = startAt;
     booking.endAt = endAt;
     booking.history = history;
@@ -1123,7 +1133,7 @@ export class MemoryMeetStore implements MeetStore {
         Date.parse(booking.endAt) > nowMs &&
         (booking.pageKey === memberKey ||
           booking.attendeeMemberKeys.includes(memberKey) ||
-          booking.pageKey === "")
+          (booking.pageKey === "" && (booking.meetingType == null || booking.meetingType === "meeting")))
     );
   }
 

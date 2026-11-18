@@ -1,13 +1,11 @@
 import type { Metadata } from "next";
-import Image from "next/image";
-import Link from "next/link";
 import { notFound } from "next/navigation";
 import ManageBooking from "@/components/meet/ManageBooking";
-import ThemeToggle from "@/components/ThemeToggle";
+import MeetShell from "@/components/meet/MeetShell";
 import { toBookingView } from "@/lib/meet/bookings";
 import { getMeetConfig } from "@/lib/meet/config";
 import { getMeetStore } from "@/lib/meet/store";
-import { SITE } from "@/meet.config";
+import { teamMeetingTypes } from "@/lib/meet/meetingTypes";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -27,27 +25,21 @@ export default async function ManageBookingPage({
   const { token } = await params;
   const booking = await getMeetStore().getBookingByToken(token);
   if (!booking) notFound();
-  const hostTimezone = getMeetConfig().hostTimezone;
-
+  const config = getMeetConfig();
+  const view = toBookingView(booking);
+  const enabled = teamMeetingTypes(config).some(({ key }) => key === view.meetingType);
+  const rebookHref = view.pageKey ? `/${view.pageKey}` : enabled ? `/book/${view.meetingType}` : "/";
   return (
-    <main className="flex min-h-screen flex-col bg-paper text-ink">
-      <header className="mx-auto flex w-full max-w-2xl items-center justify-between px-5 pt-8 sm:px-6">
-        <Link href="/" aria-label={`${SITE.name} Meet home`} className="inline-flex shrink-0 items-center">
-          <Image
-            src={SITE.logo}
-            alt={SITE.name}
-            width={112}
-            height={30}
-            className="h-7 w-auto dark:brightness-0 dark:invert"
-            priority
-          />
-        </Link>
-        <ThemeToggle />
-      </header>
-
-      <div className="mx-auto w-full max-w-2xl flex-1 px-5 pb-24 pt-12 sm:px-6 sm:pt-16">
-        <ManageBooking initial={toBookingView(booking)} hostTimezone={hostTimezone} />
+    <MeetShell homeHref="/">
+      <div className="mx-auto w-full max-w-5xl flex-1 px-5 pt-6 pb-16 sm:px-6 sm:pt-10">
+        <ManageBooking
+          initial={view}
+          hostTimezone={config.hostTimezone}
+          initialDate={view.meetingType === "investor" ? config.investor?.startDate : undefined}
+          canReschedule={Boolean(view.pageKey || enabled)}
+          rebookHref={rebookHref}
+        />
       </div>
-    </main>
+    </MeetShell>
   );
 }

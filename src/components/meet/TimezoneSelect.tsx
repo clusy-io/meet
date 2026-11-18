@@ -1,5 +1,6 @@
 "use client";
 
+import styles from "./SlotPicker.module.css";
 import { useEffect, useId, useMemo, useRef, useState, type ReactElement } from "react";
 import { ChevronDown, Globe } from "lucide-react";
 
@@ -50,41 +51,37 @@ const FALLBACK_ZONES: string[] = [
   "Pacific/Auckland",
 ];
 
-// Offsets are stable for a session; cache per zone so re-renders and value
-// changes never redo ~400 Intl.DateTimeFormat constructions.
-const offsetLabelCache = new Map<string, string>();
+// Reuse the formatter, not the offset. A zone's offset can change between
+// two slots on the same day as daylight saving time starts or ends.
+const offsetFormatters = new Map<string, Intl.DateTimeFormat>();
 
-/** Current UTC offset of a zone, e.g. "UTC+2" or "UTC-7". */
-function offsetLabel(zone: string): string {
-  const cached = offsetLabelCache.get(zone);
-  if (cached !== undefined) return cached;
-  let label = "";
-  try {
-    const parts = new Intl.DateTimeFormat("en-US", {
-      timeZone: zone,
-      timeZoneName: "shortOffset",
-    }).formatToParts(new Date());
-    const name = parts.find((p) => p.type === "timeZoneName")?.value ?? "";
-    label = name.replace("GMT", "UTC");
-    if (label === "UTC") label = "UTC+0";
-  } catch {
-    label = "";
-  }
-  offsetLabelCache.set(zone, label);
-  return label;
-}
-
-function displayLabel(zone: string): string {
-  const offset = offsetLabel(zone);
+function displayLabel(zone: string, date: Date | null): string {
   const name = zone.replaceAll("_", " ");
-  return offset ? `${name} (${offset})` : name;
+  if (!date) return name;
+  try {
+    let formatter = offsetFormatters.get(zone);
+    if (!formatter) {
+      formatter = new Intl.DateTimeFormat("en-US", {
+        timeZone: zone,
+        timeZoneName: "shortOffset",
+      });
+      offsetFormatters.set(zone, formatter);
+    }
+    const offset = formatter.formatToParts(date).find((part) => part.type === "timeZoneName")?.value;
+    if (!offset) return name;
+    return `${name} (${offset === "GMT" ? "UTC+0" : offset.replace("GMT", "UTC")})`;
+  } catch {
+    return name;
+  }
 }
 
 export function TimezoneSelect({
   value,
+  slotIso,
   onChange,
 }: {
   value: string;
+  slotIso: string | null;
   onChange: (timezone: string) => void;
 }): ReactElement {
   const zones = useMemo(() => {
@@ -104,11 +101,25 @@ export function TimezoneSelect({
   const listRef = useRef<HTMLUListElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
+  const slotDate = useMemo(() => slotIso ? new Date(slotIso) : null, [slotIso]);
+  const options = useMemo(() => {
+    if (!open) return [];
+    // Before choosing a date, keep offset search usable without presenting
+    // today's offset as a promise about a future booking.
+    const searchDate = slotDate ?? new Date();
+    return zones.map((zone) => {
+      const searchLabel = displayLabel(zone, searchDate);
+      return {
+        zone,
+        label: slotDate ? searchLabel : displayLabel(zone, null),
+        search: searchLabel.toLowerCase(),
+      };
+    });
+  }, [open, slotDate, zones]);
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase().replaceAll("_", " ");
-    if (!q) return zones;
-    return zones.filter((z) => displayLabel(z).toLowerCase().includes(q));
-  }, [zones, query]);
+    return q ? options.filter((option) => option.search.includes(q)) : options;
+  }, [options, query]);
 
   // Close on outside click; focus the search field on open.
   useEffect(() => {
@@ -152,10 +163,10 @@ export function TimezoneSelect({
           setQuery("");
           setHighlight(0);
         }}
-        className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-ink-mute transition-colors duration-150 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+        className="inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 py-1 text-sm text-ink-mute transition-colors duration-150 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
       >
         <Globe className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />
-        {displayLabel(value)}
+        {displayLabel(value, slotDate)}
         <ChevronDown
           className={`h-3 w-3 transition-transform duration-150 ${open ? "rotate-180" : ""}`}
           strokeWidth={1.5}
@@ -164,7 +175,7 @@ export function TimezoneSelect({
       </button>
 
       {open ? (
-        <div className="absolute bottom-full left-1/2 z-20 mb-2 w-72 -translate-x-1/2 overflow-hidden rounded-lg border border-hairline bg-paper-raise shadow-lg">
+        <div className={`${styles.panel} absolute bottom-full left-1/2 z-20 mb-2 w-72 max-w-[calc(100vw-3rem)] -translate-x-1/2 overflow-hidden`}>
           <input
             ref={inputRef}
             type="text"
@@ -195,7 +206,7 @@ export function TimezoneSelect({
                 setHighlight((h) => Math.max(h - 1, 0));
               } else if (e.key === "Enter") {
                 e.preventDefault();
-                if (matches[highlight]) pick(matches[highlight]);
+                if (matches[highlight]) pick(matches[highlight].zone);
               }
             }}
             className="w-full border-b border-hairline bg-transparent px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:outline-none"
@@ -205,14 +216,14 @@ export function TimezoneSelect({
             id={listboxId}
             role="listbox"
             aria-label="Timezones"
-            className="max-h-56 overflow-y-auto py-1"
+            className={`${styles.scrollList} max-h-56 overflow-y-auto py-1`}
           >
             {matches.length === 0 ? (
               <li role="presentation" className="px-3 py-2 text-sm text-ink-mute">
                 No matching timezone
               </li>
             ) : (
-              matches.map((zone, i) => (
+              matches.map(({ zone, label }, i) => (
                 <li
                   key={zone}
                   id={`${listboxId}-option-${i}`}
@@ -230,7 +241,7 @@ export function TimezoneSelect({
                         : "text-ink-soft"
                   }`}
                 >
-                  {displayLabel(zone)}
+                  {label}
                 </li>
               ))
             )}

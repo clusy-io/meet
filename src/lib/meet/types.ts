@@ -121,6 +121,9 @@ export interface BusyInterval {
   endMs: number;
 }
 
+export const MEETING_TYPES = ["chat", "meeting", "investor"] as const;
+export type MeetingType = (typeof MEETING_TYPES)[number];
+
 export type BookingStatus = "confirmed" | "cancelled";
 
 /** A calendar event we created for a booking, so we can patch/delete it. */
@@ -133,6 +136,8 @@ export interface BookingEventRef {
 
 export interface Booking {
   id: string;
+  /** Older bookings predate the meeting_type column and retain the original page policy. */
+  meetingType?: MeetingType | null;
   /**
    * Which page took this booking: "" for the team page, or a member key for
    * that person's page (/<key>). Decides who is invited, who is emailed, and
@@ -260,6 +265,7 @@ export class ProviderAuthError extends Error {
 
 /** GET /api/meet/availability?from=YYYY-MM-DD&to=YYYY-MM-DD (host-tz dates) */
 export interface AvailabilityResponse {
+  meetingType?: MeetingType;
   /** UTC ISO start instants of bookable slots, ascending. */
   slots: string[];
   durationMinutes: number;
@@ -274,6 +280,7 @@ export interface AvailabilityResponse {
 
 /** POST /api/meet/bookings */
 export interface CreateBookingRequest {
+  meetingType?: MeetingType;
   start: string; // UTC ISO, must equal a currently-available slot start
   /** Member key of the personal page this came from; omitted = team page. */
   host?: string;
@@ -288,6 +295,7 @@ export interface CreateBookingRequest {
 }
 
 export interface BookingView {
+  meetingType?: MeetingType;
   id: string;
   /** Personal page this came from, "" for the team page. */
   pageKey: string;

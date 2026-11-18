@@ -3,6 +3,7 @@ import { Resend } from "resend";
 import { getMeetConfig, type MeetConfig } from "./config";
 import { productCta } from "./cta";
 import { buildIcs } from "./ics";
+import { specialMeetingNoun } from "./meetingTypes";
 import type { Booking, Member } from "./types";
 
 /**
@@ -168,13 +169,13 @@ interface OutboundEmail {
 
 /**
  * Attending members resolved through the caller-supplied member list
- * (config.members). Empty or unresolvable attendee keys fall back to the
- * whole team so a booking never goes unannounced.
+ * (config.members). Only regular meetings use the legacy whole-roster fallback.
  */
 function attendingMembers(booking: Booking, members: Member[]): Member[] {
   const attending = booking.attendeeMemberKeys
     .map((key) => members.find((m) => m.key === key))
     .filter((m): m is Member => m !== undefined);
+  if (booking.meetingType === "chat" || booking.meetingType === "investor") return attending;
   return attending.length > 0 ? attending : members;
 }
 
@@ -194,24 +195,13 @@ export function teamRecipients(members: Member[]): string[] {
   return [...seen];
 }
 
-/**
- * Who gets the internal copy for THIS booking.
- *
- * The team page tells every member. A personal page tells only its owner: a
- * call booked on one person's page is theirs, and fanning it out to everyone
- * is exactly the noise personal pages exist to avoid.
- *
- * Every lifecycle mail routes through here rather than calling
- * teamRecipients(config.members) directly, because that reads the GLOBAL
- * roster and ignores the `members` argument its callers pass — narrowing at
- * the call sites would change only the body's "Attending" row while still
- * mailing everyone, and every existing test would stay green.
- *
- * An unresolvable page key falls back to the whole team: a booking must never
- * go unannounced.
- */
-function noticeRecipients(config: MeetConfig, booking: Booking): string[] {
-  if (!booking.pageKey) return teamRecipients(config.members);
+/** Regular meetings notify the team. Chats and investor meetings notify their assigned hosts. */
+function noticeRecipients(config: MeetConfig, booking: Booking, attending: Member[]): string[] {
+  if (!booking.pageKey) {
+    return booking.meetingType === "chat" || booking.meetingType === "investor"
+      ? teamRecipients(attending)
+      : teamRecipients(config.members);
+  }
   const host = config.members.find((m) => m.key === booking.pageKey);
   return teamRecipients(host ? [host] : config.members);
 }
@@ -229,12 +219,24 @@ function pageHost(config: MeetConfig, booking: Booking): Member | undefined {
 function withLabel(config: MeetConfig, booking: Booking, capitalized: boolean): string {
   const host = pageHost(config, booking);
   if (host) return host.name;
+  if (booking.meetingType === "chat" || booking.meetingType === "investor") {
+    const names = attendingMembers(booking, config.members).map((member) => member.name);
+    if (names.length) return names.join(" and ");
+  }
   return `${capitalized ? "The" : "the"} ${config.brandName} team`;
+}
+
+/** Legacy meeting copy is also used for bookings that predate the type column. */
+function callName(config: MeetConfig, booking: Booking, fallback = "intro call"): string {
+  const noun = specialMeetingNoun(booking.meetingType) ?? fallback;
+  return `${config.brandName} ${noun}`;
 }
 
 /** Where "book another time" sends them: back to the page they came from. */
 function bookAgainUrl(config: MeetConfig, booking: Booking): string {
-  return booking.pageKey ? `${config.siteOrigin}/${booking.pageKey}` : config.siteOrigin;
+  if (booking.pageKey) return `${config.siteOrigin}/${booking.pageKey}`;
+  if (booking.meetingType === "investor" && !config.investor) return config.siteOrigin;
+  return booking.meetingType ? `${config.siteOrigin}/book/${booking.meetingType}` : config.siteOrigin;
 }
 
 async function deliver(resend: Resend, from: string, mail: OutboundEmail): Promise<void> {
@@ -259,7 +261,7 @@ async function sendPair(
 ): Promise<void> {
   const config = getMeetConfig();
   const apiKey = process.env.RESEND_API_KEY;
-  const mails = [booker, team, ...additional];
+  const mails = [booker, team, ...additional].filter((mail) => mail.to.length > 0);
   if (config.mockMode) {
     for (const mail of mails) {
       console.log(`meet email skipped (mock mode): "${mail.subject}" -> ${mail.to.join(", ")}`);
@@ -283,6 +285,7 @@ export async function sendBookingConfirmed(
   try {
     const config = options.config ?? getMeetConfig();
     const attending = attendingMembers(booking, members);
+    const call = callName(config, booking);
     const manageUrl = `${config.siteOrigin}/manage/${booking.manageToken}`;
     const whenLocal = formatWhen(booking.startAt, booking.timezone);
     const whenHost = formatWhen(booking.startAt, config.hostTimezone);
@@ -297,10 +300,10 @@ export async function sendBookingConfirmed(
 
     const booker: OutboundEmail = {
       to: [booking.email],
-      subject: `Confirmed: ${config.brandName} intro call, ${formatShortDate(booking.startAt, booking.timezone)}`,
+      subject: `Confirmed: ${call}, ${formatShortDate(booking.startAt, booking.timezone)}`,
       html: shell(
         heading("Your call is confirmed") +
-          subline(`${escapeHtml(config.brandName)} intro call, ${booking.durationMinutes} minutes.`) +
+          subline(`${escapeHtml(call)}, ${booking.durationMinutes} minutes.`) +
           hairline() +
           row(
             "When",
@@ -317,7 +320,7 @@ export async function sendBookingConfirmed(
       ),
       text: [
         "Your call is confirmed",
-        `${config.brandName} intro call, ${booking.durationMinutes} minutes.`,
+        `${call}, ${booking.durationMinutes} minutes.`,
         "",
         `When: ${whenLocal}`,
         hostTimeLabel(whenHost, config.hostTimezone),
@@ -334,7 +337,7 @@ export async function sendBookingConfirmed(
     const attendingNames = attending.map((m) => m.name).join(", ");
     const notesHtml = booking.notes ? escapeHtml(booking.notes).replace(/\n/g, "<br/>") : "None";
     const team: OutboundEmail = {
-      to: noticeRecipients(config, booking),
+      to: noticeRecipients(config, booking, attending),
       replyTo: booking.email,
       subject: `New booking: ${booking.name}, ${whenHost}`,
       html: shell(
@@ -373,17 +376,17 @@ export async function sendBookingConfirmed(
       ? booking.guests.map((guest) => ({
           to: [guest],
           replyTo: booking.email,
-          subject: `Invitation: ${config.brandName} intro call, ${formatShortDate(booking.startAt, config.hostTimezone)}`,
+          subject: `Invitation: ${call}, ${formatShortDate(booking.startAt, config.hostTimezone)}`,
           html: shell(
             heading(`${escapeHtml(booking.name)} invited you to a call`) +
-              subline(`${escapeHtml(config.brandName)} intro call, ${booking.durationMinutes} minutes.`) +
+              subline(`${escapeHtml(call)}, ${booking.durationMinutes} minutes.`) +
               hairline() +
               row("When", escapeHtml(hostTimeLabel(whenHost, config.hostTimezone))) +
               row("Where", whereHtml)
           ),
           text: [
             `${booking.name} invited you to a call`,
-            `${config.brandName} intro call, ${booking.durationMinutes} minutes.`,
+            `${call}, ${booking.durationMinutes} minutes.`,
             "",
             `When: ${hostTimeLabel(whenHost, config.hostTimezone)}`,
             `Where: ${whereText}`,
@@ -406,6 +409,7 @@ export async function sendBookingCancelled(
 ): Promise<void> {
   try {
     const attending = attendingMembers(booking, members);
+    const call = callName(config, booking);
     const whenLocal = formatWhen(booking.startAt, booking.timezone);
     const whenHost = formatWhen(booking.startAt, config.hostTimezone);
     const attachments = [{ filename: "invite.ics", content: Buffer.from(buildIcs(booking, "CANCEL")) }];
@@ -413,17 +417,17 @@ export async function sendBookingCancelled(
 
     const booker: OutboundEmail = {
       to: [booking.email],
-      subject: `Cancelled: ${config.brandName} intro call`,
+      subject: `Cancelled: ${call}`,
       html: shell(
         heading("Your call is cancelled") +
-          `<p style="margin:12px 0 0;">The ${escapeHtml(config.brandName)} intro call scheduled for ${escapeHtml(whenLocal)} is cancelled.</p>` +
+          `<p style="margin:12px 0 0;">The ${escapeHtml(call)} scheduled for ${escapeHtml(whenLocal)} is cancelled.</p>` +
           hairline() +
           `<p style="margin:0;font-size:13px;color:${MUTED};">Want to find another time? Book again:<br/>${link(bookUrl)}</p>`
       ),
       text: [
         "Your call is cancelled",
         "",
-        `The ${config.brandName} intro call scheduled for ${whenLocal} is cancelled.`,
+        `The ${call} scheduled for ${whenLocal} is cancelled.`,
         "",
         "Want to find another time? Book again:",
         bookUrl,
@@ -433,7 +437,7 @@ export async function sendBookingCancelled(
 
     const attendingNames = attending.map((m) => m.name).join(", ");
     const team: OutboundEmail = {
-      to: noticeRecipients(config, booking),
+      to: noticeRecipients(config, booking, attending),
       replyTo: booking.email,
       subject: `Cancelled: ${booking.name}, ${whenHost}`,
       html: shell(
@@ -468,6 +472,7 @@ export async function sendBookingRescheduled(
 ): Promise<void> {
   try {
     const attending = attendingMembers(booking, members);
+    const call = callName(config, booking);
     const manageUrl = `${config.siteOrigin}/manage/${booking.manageToken}`;
     const whenLocal = formatWhen(booking.startAt, booking.timezone);
     const whenHost = formatWhen(booking.startAt, config.hostTimezone);
@@ -484,10 +489,10 @@ export async function sendBookingRescheduled(
 
     const booker: OutboundEmail = {
       to: [booking.email],
-      subject: `Rescheduled: ${config.brandName} intro call, ${formatShortDate(booking.startAt, booking.timezone)}`,
+      subject: `Rescheduled: ${call}, ${formatShortDate(booking.startAt, booking.timezone)}`,
       html: shell(
         heading("Your call is rescheduled") +
-          subline(`${escapeHtml(config.brandName)} intro call, ${booking.durationMinutes} minutes.`) +
+          subline(`${escapeHtml(call)}, ${booking.durationMinutes} minutes.`) +
           hairline() +
           row(
             "When",
@@ -501,7 +506,7 @@ export async function sendBookingRescheduled(
       ),
       text: [
         "Your call is rescheduled",
-        `${config.brandName} intro call, ${booking.durationMinutes} minutes.`,
+        `${call}, ${booking.durationMinutes} minutes.`,
         "",
         `When: ${whenLocal}`,
         hostTimeLabel(whenHost, config.hostTimezone),
@@ -517,7 +522,7 @@ export async function sendBookingRescheduled(
 
     const attendingNames = attending.map((m) => m.name).join(", ");
     const team: OutboundEmail = {
-      to: noticeRecipients(config, booking),
+      to: noticeRecipients(config, booking, attending),
       replyTo: booking.email,
       subject: `Rescheduled: ${booking.name}, ${whenHost}`,
       html: shell(
@@ -556,6 +561,7 @@ export async function sendBookingReminder(
 ): Promise<void> {
   try {
     const attending = attendingMembers(booking, members);
+    const call = callName(config, booking);
     const manageUrl = `${config.siteOrigin}/manage/${booking.manageToken}`;
     const whenLocal = formatWhen(booking.startAt, booking.timezone);
     const whenHost = formatWhen(booking.startAt, config.hostTimezone);
@@ -569,10 +575,10 @@ export async function sendBookingReminder(
 
     const booker: OutboundEmail = {
       to: [booking.email],
-      subject: `Reminder: ${config.brandName} call ${phrase}`,
+      subject: `Reminder: ${callName(config, booking, "call")} ${phrase}`,
       html: shell(
         heading(`Your call is ${phrase}`) +
-          subline(`${escapeHtml(config.brandName)} intro call, ${booking.durationMinutes} minutes.`) +
+          subline(`${escapeHtml(call)}, ${booking.durationMinutes} minutes.`) +
           hairline() +
           row(
             "When",
@@ -584,7 +590,7 @@ export async function sendBookingReminder(
       ),
       text: [
         `Your call is ${phrase}`,
-        `${config.brandName} intro call, ${booking.durationMinutes} minutes.`,
+        `${call}, ${booking.durationMinutes} minutes.`,
         "",
         `When: ${whenLocal}`,
         hostTimeLabel(whenHost, config.hostTimezone),
@@ -598,7 +604,7 @@ export async function sendBookingReminder(
 
     const attendingNames = attending.map((m) => m.name).join(", ");
     const team: OutboundEmail = {
-      to: noticeRecipients(config, booking),
+      to: noticeRecipients(config, booking, attending),
       replyTo: booking.email,
       subject: `Reminder: ${booking.name} ${phrase}, ${formatShortDate(booking.startAt, config.hostTimezone)}`,
       html: shell(

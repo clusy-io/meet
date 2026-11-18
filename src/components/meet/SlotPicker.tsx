@@ -19,7 +19,9 @@ import {
   parseCivilDate,
   utcToWall,
 } from "@/lib/meet/tz";
-import type { AvailabilityResponse } from "@/lib/meet/types";
+import type { AvailabilityResponse, MeetingType } from "@/lib/meet/types";
+import { availabilityUrl } from "./AvailabilityPrime";
+import styles from "./SlotPicker.module.css";
 import { TimezoneSelect } from "@/components/meet/TimezoneSelect";
 
 /**
@@ -177,6 +179,9 @@ export function SlotPicker(props: {
   onClearSlot?: () => void;
   /** Personal page slug: availability comes from that one person's calendar. */
   host?: string;
+  meetingType?: MeetingType;
+  /** First host-local date of a fixed booking window for the empty or loading calendar. */
+  initialDate?: string;
 }): ReactElement {
   const {
     onSelect,
@@ -188,13 +193,13 @@ export function SlotPicker(props: {
     formSlot = null,
     onClearSlot,
     host,
+    meetingType,
+    initialDate,
   } = props;
 
   const [attempt, setAttempt] = useState(0);
-  // The host belongs in the key: it gates which in-flight response is allowed
-  // into state, and without it the four pages are indistinguishable to the
-  // load-state machine, so a slow team response could land on a personal page.
-  const requestKey = `${host ?? "team"}:${manageToken ?? "public"}:${attempt}`;
+  const url = availabilityUrl({ host, manageToken, meetingType });
+  const requestKey = `${url}:${attempt}`;
   const [loadState, setLoadState] = useState<AvailabilityLoadState>({
     requestKey,
     status: "loading",
@@ -237,12 +242,6 @@ export function SlotPicker(props: {
 
   useEffect(() => {
     let cancelled = false;
-    const query = new URLSearchParams();
-    if (manageToken) query.set("token", manageToken);
-    if (host) query.set("host", host);
-    const url = query.size > 0
-      ? `/api/meet/availability?${query.toString()}`
-      : "/api/meet/availability";
     // Adopt the request the inline prime script started during HTML parsing,
     // if it is for exactly this URL. Three guards, all load-bearing: the URL
     // must match byte for byte (a personal page must never adopt the team
@@ -267,7 +266,7 @@ export function SlotPicker(props: {
       .then((res) => {
         // An adopted promise is already parsed JSON; a fresh one is a Response.
         if (!(res instanceof Response)) return res;
-        if ((manageToken || host) && res.status === 404) {
+        if (res.status === 404) {
           if (!cancelled) setLoadState({ requestKey, status: "not-found" });
           return null;
         }
@@ -283,7 +282,7 @@ export function SlotPicker(props: {
         // Response, so the not-found branch has to be recognised here too or a
         // page disabled between render and fetch would report a generic
         // failure and offer a "Try again" that can never succeed.
-        if ((manageToken || host) && error === 404) {
+        if (error === 404) {
           setLoadState({ requestKey, status: "not-found" });
           return;
         }
@@ -292,7 +291,7 @@ export function SlotPicker(props: {
     return () => {
       cancelled = true;
     };
-  }, [host, manageToken, requestKey]);
+  }, [url, manageToken, requestKey]);
 
   const currentLoad = loadState.requestKey === requestKey ? loadState : null;
   const data = currentLoad?.status === "ready" ? currentLoad.data : null;
@@ -383,11 +382,9 @@ export function SlotPicker(props: {
   const months = useMemo<MonthModel[]>(() => {
     const keys = [...slotsByDay.keys()].sort();
     if (keys.length === 0) {
-      // Before availability lands, and when there is none at all, the visitor's
-      // own clock already fixes which month belongs on screen, and six-row
-      // months fix its box. Drawing it now is what lets the response arrive
-      // without swapping one subtree for another.
-      const w = utcToWall(timezone, nowMs);
+      // A fixed booking window can be months away. Keep its month visible
+      // while loading and even when every time in that window is taken.
+      const w = (initialDate && parseCivilDate(initialDate)) || utcToWall(timezone, nowMs);
       return [buildMonth(w.year, w.month, slotsByDay)];
     }
     const first = parseCivilDate(keys[0]);
@@ -405,7 +402,7 @@ export function SlotPicker(props: {
       }
     }
     return out;
-  }, [slotsByDay, timezone, nowMs]);
+  }, [slotsByDay, timezone, nowMs, initialDate]);
 
   // The visitor's own civil today. A day BEFORE it can never become bookable,
   // and the client knows that without asking the server, so those cells get no
@@ -476,8 +473,10 @@ export function SlotPicker(props: {
 
   if (notFound) {
     return (
-      <div className="rounded-lg border border-hairline bg-paper-raise p-4 sm:p-5">
-        <p className="text-sm text-ink-mute">This booking can no longer be rescheduled.</p>
+      <div className={`${styles.panel} p-4 sm:p-5`}>
+        <p className="text-sm text-ink-mute">
+          {manageToken ? "This booking can no longer be rescheduled." : "This booking page is no longer available."}
+        </p>
       </div>
     );
   }
@@ -488,7 +487,7 @@ export function SlotPicker(props: {
   // and six row months, and shift every cell 8px on mobile (p-5 against p-4).
   if (failed) {
     return (
-      <div className="rounded-lg border border-hairline bg-paper-raise p-4 sm:p-5">
+      <div className={`${styles.panel} p-4 sm:p-5`}>
         <p className="text-sm text-ink-mute">Could not load available times.</p>
         <button
           type="button"
@@ -501,7 +500,7 @@ export function SlotPicker(props: {
     );
   }
 
-  // `months` always holds at least the visitor's current month now, so `month`
+  // `months` always holds at least the opening month, so `month`
   // is never null; "no times available" became the caption line below, which
   // keeps the calendar on screen instead of replacing it with a sentence.
   if (!month) return <></>;
@@ -522,6 +521,7 @@ export function SlotPicker(props: {
    * and the time column's scroll container with it.
    */
   const captionMotionCue = hydrated && reducedMotion;
+  const showMonthLabel = hydrated || Boolean(initialDate);
   const caption = pending
     ? slow || captionMotionCue
       ? "Still checking calendars"
@@ -579,7 +579,7 @@ export function SlotPicker(props: {
    */
   const renderCalendar = (prefix: string) => (
     <div className="select-none">
-      <div className="mb-3 flex items-center justify-between">
+      <div className="mb-3 flex items-center justify-between border-b border-hairline pb-2">
         <AnimatePresence mode="popLayout" initial={false} custom={navDir}>
           <motion.p
             key={month.key}
@@ -587,17 +587,16 @@ export function SlotPicker(props: {
             animate={{ opacity: 1, x: 0 }}
             exit={reducedMotion ? undefined : { opacity: 0, x: navDir * -16 }}
             transition={fade}
-            className="font-serif-display text-base font-bold text-ink"
+            className="font-serif-display text-lg font-semibold text-ink"
           >
-            {/* Which month this is depends on the visitor's timezone, which the
-                server cannot know, so it arrives with the dates. The nbsp holds
-                the line's height so nothing shifts when it does. */}
+            {/* A fixed campaign month is known on the server. Other calendars
+                wait for the visitor's timezone before revealing the label. */}
             <span
               className={`inline-block transition-opacity duration-200 ease-out motion-reduce:transition-none ${
-                hydrated ? "opacity-100" : "opacity-0"
+                showMonthLabel ? "opacity-100" : "opacity-0"
               }`}
             >
-              {hydrated ? MONTH_FMT.format(month.labelMs) : " "}
+              {showMonthLabel ? MONTH_FMT.format(month.labelMs) : " "}
             </span>
           </motion.p>
         </AnimatePresence>
@@ -605,24 +604,24 @@ export function SlotPicker(props: {
           <button
             type="button"
             aria-label="Previous month"
-            disabled={monthIndex === 0}
+            disabled={selecting || monthIndex === 0}
             onClick={() => {
               setNavDir(-1);
               setMonthKey(months[monthIndex - 1]?.key ?? month.key);
             }}
-            className={`rounded-md p-1.5 text-ink-mute transition-colors duration-150 hover:text-ink disabled:opacity-30 disabled:hover:text-ink-mute ${FOCUS_RING}`}
+            className={`grid size-11 place-items-center rounded-full text-ink-soft transition-colors duration-150 enabled:hover:bg-accent/10 enabled:hover:text-accent disabled:opacity-40 ${FOCUS_RING}`}
           >
             <ChevronLeft className="h-4 w-4" strokeWidth={1.5} />
           </button>
           <button
             type="button"
             aria-label="Next month"
-            disabled={monthIndex >= months.length - 1}
+            disabled={selecting || monthIndex >= months.length - 1}
             onClick={() => {
               setNavDir(1);
               setMonthKey(months[monthIndex + 1]?.key ?? month.key);
             }}
-            className={`rounded-md p-1.5 text-ink-mute transition-colors duration-150 hover:text-ink disabled:opacity-30 disabled:hover:text-ink-mute ${FOCUS_RING}`}
+            className={`grid size-11 place-items-center rounded-full text-ink-soft transition-colors duration-150 enabled:hover:bg-accent/10 enabled:hover:text-accent disabled:opacity-40 ${FOCUS_RING}`}
           >
             <ChevronRight className="h-4 w-4" strokeWidth={1.5} />
           </button>
@@ -633,7 +632,7 @@ export function SlotPicker(props: {
         {WEEKDAY_HEADER.map((w) => (
           <p
             key={w}
-            className="pb-1 text-center text-[10px] font-medium uppercase tracking-[0.12em] text-ink-faint"
+            className="pb-2 text-center text-[11px] font-medium text-ink-mute"
           >
             {w}
           </p>
@@ -708,7 +707,7 @@ export function SlotPicker(props: {
               <motion.button
                 key={cell.key}
                 type="button"
-                disabled={!bookable}
+                disabled={selecting || !bookable}
                 // Both gated on `hydrated`: which cells are in-month is a
                 // function of the visitor's timezone, so emitting either of
                 // these server-side would be a hydration mismatch for anyone
@@ -733,7 +732,7 @@ export function SlotPicker(props: {
                     ? { duration: 0 }
                     : { delay: Math.min(i * 0.006, 0.18), duration: 0.16 }
                 }
-                className={`relative flex aspect-square items-center justify-center rounded-lg text-sm transition-colors duration-150 ${FOCUS_RING} ${
+                className={`relative flex aspect-square items-center justify-center rounded-lg text-sm tabular-nums transition-colors duration-150 ${FOCUS_RING} ${
                   isActive
                     ? "font-semibold text-paper"
                     : bookable
@@ -837,10 +836,10 @@ export function SlotPicker(props: {
 
   const renderTimesWide = () => (
     <div key={`wide-${activeDay}`}>
-      <p className="mb-3 hidden text-sm font-medium text-ink sm:block">
+      <p className="font-serif-display mb-3 hidden border-b border-hairline pb-2 text-lg font-semibold text-ink sm:block">
         {activeSlots.length > 0 ? longDayFmt.format(Date.parse(activeSlots[0])) : ""}
       </p>
-      <div className="grid grid-cols-3 gap-1 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
         {activeSlots.map((iso, i) => (
           <motion.button
             key={iso}
@@ -854,7 +853,7 @@ export function SlotPicker(props: {
             transition={
               reducedMotion ? { duration: 0 } : { delay: Math.min(i * 0.012, 0.2), duration: 0.16 }
             }
-            className={`min-h-11 rounded-md px-2 py-2.5 text-sm font-medium text-ink-soft transition-colors duration-150 hover:bg-ink/[0.06] hover:text-ink disabled:opacity-60 ${FOCUS_RING}`}
+            className={`min-h-11 rounded-[10px] border border-hairline px-1.5 py-2 text-sm font-medium text-ink-soft tabular-nums transition-colors duration-150 hover:bg-ink/[0.06] hover:text-ink disabled:opacity-60 ${FOCUS_RING}`}
           >
             {timeFmt.format(Date.parse(iso))}
           </motion.button>
@@ -865,12 +864,12 @@ export function SlotPicker(props: {
 
   const renderTimesSlim = (prefix: string) => (
     <div key={`slim-${activeDay}`}>
-      <p className="mb-3 text-sm font-medium text-ink">
+      <p className="font-serif-display mb-3 border-b border-hairline pb-2 text-base font-semibold text-ink">
         {activeDay ? shortDayFmt.format(Date.parse(activeSlots[0] ?? selectedSlot ?? "")) : ""}
       </p>
       <div
         ref={revealChosenTime}
-        className="flex max-h-[420px] flex-col gap-0.5 overflow-y-auto pr-1"
+        className={`${styles.scrollList} flex max-h-[420px] flex-col gap-0.5 overflow-y-auto pr-2`}
       >
         {activeSlots.map((iso) => {
           const isChosen = iso === selectedSlot;
@@ -882,7 +881,7 @@ export function SlotPicker(props: {
               data-meet-time
               onClick={() => onSelect(iso, timezone, durationMinutes)}
               aria-pressed={isChosen}
-              className={`relative shrink-0 rounded-md px-3 py-2 text-sm font-medium transition-colors duration-150 disabled:opacity-60 ${FOCUS_RING} ${
+              className={`relative min-h-11 shrink-0 rounded-md px-3 py-2 text-sm font-medium tabular-nums transition-colors duration-150 disabled:opacity-60 ${FOCUS_RING} ${
                 isChosen ? "text-paper" : "text-ink-soft hover:bg-ink/[0.06] hover:text-ink"
               }`}
             >
@@ -934,7 +933,7 @@ export function SlotPicker(props: {
               exit={reducedMotion ? undefined : { opacity: 0, x: -16 }}
               transition={fade}
               aria-busy={pending || undefined}
-              className={`mx-auto w-full max-w-[390px] rounded-lg border border-hairline bg-paper-raise p-4 ${
+              className={`mx-auto w-full max-w-[390px] ${styles.panel} p-4 ${
                 pending ? "meet-seeking" : settling ? "meet-settling" : ""
               }`}
             >
@@ -950,13 +949,14 @@ export function SlotPicker(props: {
             >
               <button
                 type="button"
+                disabled={selecting}
                 onClick={() => setPickedDay(null)}
-                className={`mb-3 inline-flex w-full items-center justify-between rounded-lg border border-hairline bg-paper-raise px-4 py-3 text-left transition-colors duration-150 hover:border-hairline-strong ${FOCUS_RING}`}
+                className={`mb-3 inline-flex w-full items-center justify-between gap-3 rounded-xl border border-hairline bg-paper-raise px-4 py-3 text-left transition-colors duration-150 hover:border-hairline-strong ${FOCUS_RING}`}
               >
                 <span className="text-sm font-medium text-ink">{summaryLabel}</span>
-                <span className="text-xs font-medium text-accent">Change date</span>
+                <span className="shrink-0 text-sm font-medium text-accent">Change date</span>
               </button>
-              <div className="rounded-lg border border-hairline bg-paper-raise p-4">
+              <div className={`${styles.panel} p-4`}>
                 {renderTimesWide()}
               </div>
             </motion.div>
@@ -970,15 +970,16 @@ export function SlotPicker(props: {
             >
               <button
                 type="button"
+                disabled={selecting}
                 onClick={() => onClearSlot?.()}
-                className={`mb-3 inline-flex w-full items-center justify-between rounded-lg border border-hairline bg-paper-raise px-4 py-3 text-left transition-colors duration-150 hover:border-hairline-strong ${FOCUS_RING}`}
+                className={`mb-3 inline-flex w-full items-center justify-between gap-3 rounded-xl border border-hairline bg-paper-raise px-4 py-3 text-left transition-colors duration-150 hover:border-hairline-strong ${FOCUS_RING}`}
               >
                 <span className="text-sm font-medium text-ink">
                   {summaryLabel}, {selectedSlot ? timeFmt.format(Date.parse(selectedSlot)) : ""}
                 </span>
-                <span className="text-xs font-medium text-accent">Change time</span>
+                <span className="shrink-0 text-sm font-medium text-accent">Change time</span>
               </button>
-              <div className="rounded-lg border border-hairline bg-paper-raise p-4">{formSlot}</div>
+              <div className={`${styles.panel} p-4`}>{formSlot}</div>
             </motion.div>
           )}
         </AnimatePresence>
@@ -1005,7 +1006,7 @@ export function SlotPicker(props: {
             animate={{ opacity: 1 }}
             transition={fade}
             aria-busy={pending || undefined}
-            className={`rounded-lg border border-hairline bg-paper-raise p-5 ${
+            className={`${styles.panel} p-5 ${
               expanded ? "w-[320px]" : "mx-auto mt-6 w-[390px]"
             } ${pending ? "meet-seeking" : settling ? "meet-settling" : ""}`}
           >
@@ -1020,7 +1021,7 @@ export function SlotPicker(props: {
                 animate={{ opacity: 1, x: 0, scale: 1 }}
                 exit={reducedMotion ? undefined : { opacity: 0, transition: { duration: 0.12 } }}
                 transition={spring}
-                className="min-w-0 flex-1 rounded-lg border border-hairline bg-paper-raise p-5"
+                className={`min-w-0 flex-1 ${styles.panel} p-5`}
               >
                 {renderTimesWide()}
               </motion.div>
@@ -1032,7 +1033,7 @@ export function SlotPicker(props: {
                 animate={{ opacity: 1, x: 0 }}
                 exit={reducedMotion ? undefined : { opacity: 0 }}
                 transition={spring}
-                className="w-[190px] rounded-lg border border-hairline bg-paper-raise p-5"
+                className={`w-[190px] ${styles.panel} p-5`}
               >
                 {renderTimesSlim("d")}
               </motion.div>
@@ -1048,7 +1049,7 @@ export function SlotPicker(props: {
                     ? { duration: 0 }
                     : { type: "spring" as const, stiffness: 300, damping: 30, delay: 0.06 }
                 }
-                className="min-w-0 rounded-lg border border-hairline bg-paper-raise p-5"
+                className={`min-w-0 ${styles.panel} p-5`}
               >
                 {formSlot}
               </motion.div>
@@ -1093,7 +1094,13 @@ export function SlotPicker(props: {
           formOpen ? "hidden lg:flex" : "flex"
         } h-6 justify-center`}
       >
-        {hydrated ? <TimezoneSelect value={timezone} onChange={handleTimezoneChange} /> : null}
+        {hydrated ? (
+          <TimezoneSelect
+            value={timezone}
+            slotIso={selectedDay ? selectedSlot : activeSlots[0] ?? null}
+            onChange={handleTimezoneChange}
+          />
+        ) : null}
       </div>
     </div>
   );

@@ -40,9 +40,12 @@ export async function notifyBookingSlack(
     if (Date.parse(booking.createdAt) < settings.enabledAtMs && type !== "cancelled") return;
 
     const config = await getHistoricalMeetConfig();
-    const host = booking.pageKey
-      ? config.members.find((m) => m.key === booking.pageKey)
-      : undefined;
+    const hostKeys = booking.meetingType === "chat" || booking.meetingType === "investor"
+      ? booking.attendeeMemberKeys
+      : [booking.pageKey];
+    const hostNames = hostKeys
+      .map((key) => config.members.find((member) => member.key === key)?.name)
+      .filter(Boolean);
 
     const webhookUrl = await slackWebhookForPage(booking.pageKey, settings.webhookUrl);
     const result = await postMeetingSlackEvent(
@@ -52,7 +55,8 @@ export async function notifyBookingSlack(
         type,
         startAt: booking.startAt,
         endAt: booking.endAt,
-        hostName: host?.name ?? null,
+        hostName: hostNames.join(" and ") || null,
+        meetingType: booking.meetingType,
         bookerName: booking.name,
         meetingUrl: booking.meetingUrl,
         ...(previousStartAt === undefined ? {} : { previousStartAt }),

@@ -1,11 +1,13 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Check, Copy } from "lucide-react";
+import Link from "next/link";
+import { ArrowLeft, Check, Copy, Video } from "lucide-react";
 import { productCta } from "@/lib/meet/cta";
-import type { BookingView } from "@/lib/meet/types";
+import type { BookingView, MeetingType } from "@/lib/meet/types";
 import { BookingForm } from "@/components/meet/BookingForm";
 import { SlotPicker } from "@/components/meet/SlotPicker";
+import styles from "./BookingDetails.module.css";
 import { SITE } from "@/meet.config";
 
 /**
@@ -55,11 +57,15 @@ export default function MeetBooking({
   host,
   headline,
   blurb,
+  meetingType,
+  initialDate,
 }: {
   /** Member key of the personal page; omitted renders the team page. */
   host?: string;
   headline?: string;
   blurb?: string | null;
+  meetingType?: MeetingType;
+  initialDate?: string;
 } = {}) {
   const [step, setStep] = useState<Step>("pick");
   // Owned here, not in SlotPicker, so the Back-to-times step change and the
@@ -162,18 +168,19 @@ export default function MeetBooking({
     const cta = productCta();
     return (
       <section aria-live="polite" className="w-full max-w-lg">
-        <div className="rounded-lg border border-hairline bg-paper-raise p-6 sm:p-8">
-          <div className="flex h-10 w-10 items-center justify-center rounded-full border border-hairline">
-            <Check className="h-4 w-4 text-status-ok" strokeWidth={1.5} />
+        <div className={styles.card}>
+          <div className="mb-4 grid h-11 w-11 place-items-center rounded-full bg-accent/10 text-accent">
+            <Check size={22} strokeWidth={1.8} aria-hidden />
           </div>
 
-          <h1 className="font-serif-display mt-5 text-2xl font-bold tracking-tight text-ink">
+          <h1 className={styles.title}>
             You&apos;re booked
           </h1>
-          <p className="mt-2 text-sm text-ink-soft">
-            {formatDay(booking.startAt, booking.timezone)} at{" "}
-            {formatTime(booking.startAt, booking.timezone)} ({booking.timezone.replaceAll("_", " ")})
-          </p>
+          <div className={styles.summary}>
+            <p className="font-semibold text-ink">{formatDay(booking.startAt, booking.timezone)}</p>
+            <p>{formatTime(booking.startAt, booking.timezone)} ({booking.timezone.replaceAll("_", " ")})</p>
+            <p className="mt-1 text-ink-mute">{booking.durationMinutes} minutes</p>
+          </div>
 
           {booking.meetingUrl ? (
             <p className="mt-4 text-sm">
@@ -181,8 +188,9 @@ export default function MeetBooking({
                 href={booking.meetingUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="link-draw rounded-md font-medium text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                className={styles.primary}
               >
+                <Video size={16} aria-hidden />
                 Join the video call
               </a>
             </p>
@@ -194,9 +202,9 @@ export default function MeetBooking({
 
           <div className="mt-6">
             <p className="text-xs font-medium text-ink-mute">
-              Need to change it? Cancel or reschedule with this link:
+              Need to change it? Use this link to cancel or reschedule.
             </p>
-            <div className="mt-2 flex items-center gap-2 rounded-md border border-hairline bg-paper px-3 py-2">
+            <div className="mt-2 flex items-center gap-2 rounded-xl border border-hairline bg-paper py-1 pr-1 pl-3">
               <a
                 href={manageUrl}
                 className="min-w-0 flex-1 truncate rounded-md font-mono text-xs text-ink-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
@@ -206,7 +214,7 @@ export default function MeetBooking({
               <button
                 type="button"
                 onClick={() => void copyManageLink(manageUrl)}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-md border border-hairline px-2 py-1 text-xs font-medium text-ink transition-colors duration-150 hover:border-hairline-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                className="inline-flex min-h-10 shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs font-medium text-ink transition-colors duration-150 hover:bg-ink/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
               >
                 {copied ? (
                   <Check className="h-3.5 w-3.5 text-status-ok" strokeWidth={1.5} />
@@ -218,7 +226,9 @@ export default function MeetBooking({
             </div>
           </div>
 
-          <p className="mt-6 text-sm text-ink-mute">A confirmation email is on its way.</p>
+          {booking.meetingUrl && (
+            <p className="mt-6 text-sm text-ink-mute">A confirmation email is on its way.</p>
+          )}
 
           {/*
             Optional operator-configured nudge (SITE.cta). Below the card's real
@@ -246,15 +256,18 @@ export default function MeetBooking({
 
   const formSlot = selectedStart ? (
     <div>
-      <p className="text-sm font-medium text-ink">Your details</p>
-      <p className="mt-1 text-xs text-ink-mute">
-        {formatDay(selectedStart, timezone)}, {formatTime(selectedStart, timezone)} (
-        {timezone.replaceAll("_", " ")}), {selectedDuration ?? "—"} minutes
+      <h2 className="font-serif-display text-2xl text-ink">Your details</h2>
+      <p className="mt-1.5 text-sm leading-5 text-ink-mute">
+        <span className="hidden lg:inline">
+          {formatDay(selectedStart, timezone)}, {formatTime(selectedStart, timezone)} ·{" "}
+        </span>
+        {timezone.replaceAll("_", " ")} · {selectedDuration ?? "—"} minutes
       </p>
-      <div className="mt-4">
+      <div className="mt-4 border-t border-hairline pt-4">
         <BookingForm
           startIso={selectedStart}
           timezone={timezone}
+          meetingType={meetingType}
           state={bookingFormState}
           onDone={handleDone}
           onSlotTaken={handleSlotTaken}
@@ -266,12 +279,23 @@ export default function MeetBooking({
 
   return (
     <section className="w-full max-w-5xl">
-      <h1 className="text-center font-serif-display text-3xl font-bold tracking-tight text-ink sm:text-4xl">
-        {headline ?? SITE.bookingTitle}
-      </h1>
-      {blurb ? (
-        <p className="mx-auto mt-3 max-w-xl text-center text-sm text-ink-mute">{blurb}</p>
-      ) : null}
+      <div className="mx-auto max-w-2xl text-center">
+        {!host && (
+          <Link
+            href="/"
+            className="mb-2 inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-sm font-medium text-ink-mute transition-colors hover:text-accent focus-visible:outline-2 focus-visible:outline-accent"
+          >
+            <ArrowLeft size={15} aria-hidden />
+            Meeting types
+          </Link>
+        )}
+        <h1 className="font-serif-display text-[clamp(2rem,5vw,3.25rem)] leading-tight tracking-tight text-balance text-ink">
+          {headline ?? SITE.bookingTitle}
+        </h1>
+        {blurb && (
+          <p className="mx-auto mt-3 max-w-[52ch] text-sm leading-relaxed text-pretty text-ink-mute sm:text-base">{blurb}</p>
+        )}
+      </div>
 
       {notice ? (
         <p
@@ -283,10 +307,13 @@ export default function MeetBooking({
         </p>
       ) : null}
 
-      <div className="mt-8">
+      <div className="mt-6">
         <SlotPicker
           key={pickerKey}
           host={host}
+          meetingType={meetingType}
+          initialDate={initialDate}
+          selecting={formPending}
           onSelect={handleSelect}
           timezone={timezone}
           onTimezoneChange={setTimezone}

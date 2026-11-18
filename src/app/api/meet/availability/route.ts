@@ -1,17 +1,12 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { computeAvailability } from "@/lib/meet/availability";
-import { getRuntimeMeetConfig } from "@/lib/meet/members";
+import { getEffectiveMeetConfig } from "@/lib/meet/members";
+import { availabilityRange, configForMeetingType, MEETING_TYPES } from "@/lib/meet/meetingTypes";
 import { getPage } from "@/lib/meet/pages";
 import { rateLimit } from "@/lib/meet/ratelimit";
 import { getMeetStore } from "@/lib/meet/store";
-import {
-  addCivilDays,
-  civilDayNumber,
-  formatCivilDate,
-  parseCivilDate,
-  utcToWall,
-} from "@/lib/meet/tz";
+import { parseCivilDate } from "@/lib/meet/tz";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,6 +20,7 @@ const querySchema = z.object({
   token: z.string().min(1).max(200).optional(),
   /** Personal page slug (/<host>); absent means the team page. */
   host: z.string().min(1).max(64).optional(),
+  type: z.enum(MEETING_TYPES).optional(),
 });
 
 export async function GET(request: Request) {
@@ -42,6 +38,7 @@ export async function GET(request: Request) {
     days: url.searchParams.get("days") ?? undefined,
     token: url.searchParams.get("token") ?? undefined,
     host: url.searchParams.get("host") ?? undefined,
+    type: url.searchParams.get("type") ?? undefined,
   });
   if (!parsed.success) {
     return NextResponse.json(
@@ -50,71 +47,44 @@ export async function GET(request: Request) {
     );
   }
 
-  const config = await getRuntimeMeetConfig();
-
-  // A personal page books one person against their own calendar, on their own
-  // window/duration. An unknown or disabled slug is a 404, not an empty slot
-  // list: HTTP 200 with zero slots renders as "fully booked" and would hide a
-  // typo or a misconfigured page behind what looks like a busy calendar.
-  let page = parsed.data.host ? await getPage(parsed.data.host) : null;
-  if (parsed.data.host && (!page || !page.enabled)) {
-    return NextResponse.json({ message: "Unknown host." }, { status: 404 });
+  const { token, from: requestedFrom } = parsed.data;
+  const civil = requestedFrom ? parseCivilDate(requestedFrom) : null;
+  if (requestedFrom && !civil) {
+    return NextResponse.json({ message: "from must be a valid YYYY-MM-DD date." }, { status: 400 });
   }
-
-  // A manage token narrows the slots to times the booking's committed
-  // attendees can make (the reschedule flow keeps the original attendees).
-  let requiredMemberKeys: string[] | undefined;
-  if (parsed.data.token) {
-    const booking = await getMeetStore().getBookingByToken(parsed.data.token);
-    if (!booking || booking.status !== "confirmed") {
-      return NextResponse.json({ message: "Booking not found." }, { status: 404 });
-    }
-    requiredMemberKeys = booking.attendeeMemberKeys;
-    // Rescheduling a personal booking must use ITS page. Falling through to
-    // the team path would compute "host free AND quorum met" and show a
-    // fraction of the host's real openings, with no error anywhere.
-    if (booking.pageKey) page = (await getPage(booking.pageKey)) ?? page;
-  }
-
-  const effective = page ? page.config : config;
-
-  // The picker never sends `days`, so this default IS the window visitors
-  // see, and it has to follow the horizon. Today through today + horizon is
-  // horizonDays + 1 opening days, each already carrying its own overnight
-  // tail. The other two are slack for member zones ahead of the host's, whose
-  // next day opens before the host's edge has passed. Candidates past the
-  // edge are dropped downstream, so the slack costs nothing; a fixed number
-  // silently hid every day past it.
-  const span = effective.horizonDays + 3;
-  const days = Math.min(span, Math.max(1, parsed.data.days ?? span));
-
-  // "from" is a civil date in the host timezone, clamped to
-  // [today, today + horizon]: the past has no slots and neither does
-  // anything beyond the booking horizon.
-  const today = utcToWall(effective.hostTimezone, Date.now());
-  const todayNumber = civilDayNumber(today.year, today.month, today.day);
-  let from = formatCivilDate(today.year, today.month, today.day);
-  if (parsed.data.from) {
-    const civil = parseCivilDate(parsed.data.from);
-    if (!civil) {
-      return NextResponse.json(
-        { message: "from must be a valid YYYY-MM-DD date." },
-        { status: 400 }
-      );
-    }
-    const fromNumber = civilDayNumber(civil.year, civil.month, civil.day);
-    if (fromNumber > todayNumber + effective.horizonDays) {
-      const edge = addCivilDays(today.year, today.month, today.day, effective.horizonDays);
-      from = formatCivilDate(edge.year, edge.month, edge.day);
-    } else if (fromNumber > todayNumber) {
-      from = parsed.data.from;
-    }
-  }
-
 
   try {
+    const booking = token ? await getMeetStore().getBookingByToken(token) : null;
+    if (token && (!booking || booking.status !== "confirmed")) {
+      return NextResponse.json({ message: "Booking not found." }, { status: 404 });
+    }
+
+    // A reschedule follows the original page and type, including older bookings
+    // that predate team meeting types.
+    const host = booking ? booking.pageKey : parsed.data.host;
+    const meetingType = (booking ? booking.meetingType : parsed.data.type) ?? "meeting";
+    const page = host ? await getPage(host) : null;
+    if (host && (!page || (!page.enabled && !booking))) {
+      return NextResponse.json({ message: "Unknown host." }, { status: 404 });
+    }
+    if (page && meetingType !== "meeting") {
+      return NextResponse.json({ message: "That meeting type is unavailable on this page." }, { status: 404 });
+    }
+
+    const pageConfig = page
+      ? page.config
+      : configForMeetingType(await getEffectiveMeetConfig(), meetingType);
+    if (!pageConfig) {
+      return NextResponse.json({ message: "That meeting type is unavailable." }, { status: 404 });
+    }
+    const effective = booking?.durationMinutes
+      ? { ...pageConfig, durationMinutes: booking.durationMinutes }
+      : pageConfig;
+    const { from, days } = availabilityRange(effective, meetingType, civil ?? undefined, parsed.data.days);
     const data = await computeAvailability(from, days, {
-      requiredMemberKeys,
+      requiredMemberKeys: booking?.attendeeMemberKeys,
+      meetingType,
+      durationMinutes: booking?.durationMinutes,
       hostKey: page?.member.key,
       config: effective,
     });

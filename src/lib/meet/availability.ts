@@ -7,6 +7,7 @@ import { ensureMockReady } from "./mock";
 import { getEffectiveMeetConfig, getRuntimeMeetConfig } from "./members";
 import { loadTeamPage } from "./pages";
 import { getProvider } from "./providers";
+import { configForMeetingType, investorWindow } from "./meetingTypes";
 import {
   availableSlots,
   candidateSlots,
@@ -30,6 +31,7 @@ import {
   type BusyInterval,
   type CalendarAccount,
   type Member,
+  type MeetingType,
 } from "./types";
 
 /**
@@ -114,7 +116,8 @@ async function providerBusyByMember(
 
 /**
  * Busy overlay from confirmed bookings, applied to each booking's OWN
- * attendees rather than to everyone.
+ * attendees. A public page also blocks any call already on that page,
+ * matching the database's per-page exclusion constraint.
  *
  * This used to blanket every member ("the team holds one intro call at a
  * time"), which was harmless while /meet was the only page. With per-person
@@ -139,7 +142,9 @@ async function withBookingsOverlay(
    * return; passing it here keeps the "always fresh, never cached" contract
    * intact, because it is still one uncached read per request.
    */
-  bookingsPromise?: Promise<Booking[]>
+  bookingsPromise?: Promise<Booking[]>,
+  /** The database also forbids overlapping bookings on the same page. */
+  pageKey?: string,
 ): Promise<Map<string, BusyInterval[]>> {
   const bookings = await (bookingsPromise ??
     getMeetStore().listConfirmedBookingsInRange(fromMs, toMs));
@@ -148,7 +153,8 @@ async function withBookingsOverlay(
   for (const [memberKey, busy] of providerBusy) {
     const overlay: BusyInterval[] = bookings
       .filter(
-        (b) => b.attendeeMemberKeys.length === 0 || b.attendeeMemberKeys.includes(memberKey)
+        (b) => (pageKey !== undefined && b.pageKey === pageKey) ||
+          b.attendeeMemberKeys.length === 0 || b.attendeeMemberKeys.includes(memberKey)
       )
       .map((b) => ({ startMs: Date.parse(b.startAt), endMs: Date.parse(b.endAt) }));
     map.set(memberKey, overlay.length === 0 ? busy : mergeBusy([...busy, ...overlay]));
@@ -223,18 +229,28 @@ function canonicalWindow(
   return { key: `${civilKeys.join("|")}|${roster}`, fromMs, toMs };
 }
 
-function unionCandidates(configs: Iterable<MeetConfig>, fromCivil: {
-  year: number;
-  month: number;
-  day: number;
-}, days: number): SlotCandidate[] {
+/** Build each member's eligible starts and the team grid in one pass. */
+function teamCandidates(
+  windows: Map<string, MeetConfig>,
+  from: { year: number; month: number; day: number },
+  days: number,
+  range?: { fromMs: number; toMs: number; meetingEndLimit: number },
+) {
+  const gridFrom = range ? addCivilDays(from.year, from.month, from.day, -MEMBER_GRID_CIVIL_PADDING_DAYS) : from;
+  const gridDays = range ? days + 2 * MEMBER_GRID_CIVIL_PADDING_DAYS : days;
   const byStart = new Map<number, SlotCandidate>();
-  for (const config of configs) {
-    for (const candidate of candidateSlotsInRange(config, fromCivil, days)) {
-      if (!byStart.has(candidate.startMs)) byStart.set(candidate.startMs, candidate);
+  const memberSlotSets = new Map<string, ReadonlySet<number>>();
+  for (const [key, config] of windows) {
+    const starts = new Set<number>();
+    for (const candidate of candidateSlotsInRange(config, gridFrom, gridDays)) {
+      if (range && (candidate.startMs < range.fromMs || candidate.startMs >= range.toMs ||
+        candidate.endMs > range.meetingEndLimit)) continue;
+      starts.add(candidate.startMs);
+      byStart.set(candidate.startMs, candidate);
     }
+    memberSlotSets.set(key, starts);
   }
-  return [...byStart.values()].sort((a, b) => a.startMs - b.startMs);
+  return { candidates: [...byStart.values()].sort((a, b) => a.startMs - b.startMs), memberSlotSets };
 }
 
 // globalThis-stashed like the store, so dev-mode module duplication across
@@ -500,6 +516,9 @@ export async function computeAvailability(
 }
 
 export interface AvailabilityOptions {
+  meetingType?: MeetingType;
+  /** Rescheduling uses the duration originally committed to that booking. */
+  durationMinutes?: number;
   requiredMemberKeys?: string[];
   hostKey?: string;
   config?: MeetConfig;
@@ -536,24 +555,39 @@ export async function computeAvailabilityPlan(
   days: number,
   options: AvailabilityOptions = {}
 ): Promise<{ response: AvailabilityResponse; lookBusy: LookBusyPlan | null }> {
-  // A supplied config (personal pages and pure tests) already carries the
-  // current roster. Rebuild only the team defaults around that roster; without
-  // one, load the persisted active roster now rather than using env forever.
-  const runtimeConfig = options.config ?? (await getRuntimeMeetConfig());
-  const globalConfig = options.config
-    ? { ...getMeetConfig(), members: runtimeConfig.members }
-    : runtimeConfig;
-  const config = runtimeConfig;
-  const { hostKey, requiredMemberKeys } = options;
-  if (config.mockMode) await ensureMockReady();
-
+  const { hostKey, requiredMemberKeys, meetingType = "meeting" } = options;
+  if (hostKey !== undefined && meetingType !== "meeting") throw new Error("meet: unsupported personal meeting type");
+  const base = options.config ?? (meetingType === "meeting" ? await getRuntimeMeetConfig() : await getEffectiveMeetConfig());
+  const typed = hostKey === undefined ? configForMeetingType(base, meetingType) : base;
+  if (!typed) throw new Error("meet: this meeting type is unavailable");
+  const config = options.durationMinutes === undefined ? typed : { ...typed, durationMinutes: options.durationMinutes };
   const fromCivil = parseCivilDate(from);
   if (!fromCivil) throw new Error(`meet: invalid civil date "${from}"`);
+  const metadata = {
+    durationMinutes: config.durationMinutes,
+    hostTimezone: config.hostTimezone,
+    minNoticeMinutes: config.minNoticeMinutes,
+  };
+  const period = meetingType === "investor" ? investorWindow(config) : undefined;
+  const investor = period && config.investor ? { ...period, requiredMember: config.investor.requiredMember } : undefined;
+  let requestedRange: { fromMs: number; toMs: number; meetingEndLimit: number } | undefined;
+  if (investor) {
+    const after = addCivilDays(fromCivil.year, fromCivil.month, fromCivil.day, days);
+    requestedRange = {
+      meetingEndLimit: investor.toMs,
+      fromMs: Math.max(investor.fromMs, wallToUtcMs(config.hostTimezone, fromCivil.year, fromCivil.month, fromCivil.day, 0, 0)),
+      toMs: Math.min(investor.toMs, wallToUtcMs(config.hostTimezone, after.year, after.month, after.day, 0, 0)),
+    };
+    if (!options.lookBusy && (Date.now() >= investor.toMs || requestedRange.fromMs >= requestedRange.toMs)) {
+      return { response: { ...metadata, slots: [] }, lookBusy: null };
+    }
+  }
+  if (config.mockMode) await ensureMockReady();
 
-  // Fetch and cache the canonical window, never the caller's. A busy interval
-  // outside the caller's days simply overlaps none of their candidates, so a
-  // wider map is always safe; a narrower one would not be.
-  const team = await loadTeamPage(globalConfig);
+  // Personal pages share the full team's cached calendar read. Team products
+  // use their own duration and cadence when applying each host's working hours.
+  const gridConfig = hostKey === undefined ? config : { ...getMeetConfig(), members: config.members };
+  const team = await loadTeamPage(gridConfig);
   const memberWindows = team.windows;
   // The team page's level is runtime state on its own settings row; a
   // personal page's came in on its config (configForPage).
@@ -565,7 +599,9 @@ export async function computeAvailabilityPlan(
         : (config.lookBusy ?? null);
   const canonicalConfigs = [...memberWindows.values(), config];
   const { key: cacheKey, fromMs: windowFromMs, toMs: canonicalToMs } =
-    canonicalWindow(config, canonicalConfigs);
+    investor
+      ? { ...investor, key: `investor|${investor.fromMs}|${investor.toMs}|${config.members.map((m) => m.key).sort().join(",")}` }
+      : canonicalWindow(config, canonicalConfigs);
 
   const cache = busyCache();
   const nowMs = Date.now();
@@ -598,7 +634,7 @@ export async function computeAvailabilityPlan(
     // would make the cached value partial while the key stayed the same, and
     // the team page would then read a map missing two founders, fail quorum on
     // every slot, and show a silent 60-second outage.
-    providerBusy = await providerBusyByMember(globalConfig, windowFromMs, windowToMs);
+    providerBusy = await providerBusyByMember(gridConfig, windowFromMs, windowToMs);
     cache.set(cacheKey, {
       expiresMs: nowMs + CACHE_TTL_MS,
       fromMs: windowFromMs,
@@ -618,7 +654,8 @@ export async function computeAvailabilityPlan(
     providerBusy,
     windowFromMs,
     windowToMs,
-    bookingsPromise
+    bookingsPromise,
+    hostKey ?? TEAM_PAGE_KEY,
   );
 
   // A personal page sees a map holding at most its own owner. Scoping the MAP
@@ -640,15 +677,7 @@ export async function computeAvailabilityPlan(
   let memberSlotSets: Map<string, ReadonlySet<number>> | undefined;
   let overhangMin = overnightOverhangMin(config);
   if (hostKey === undefined) {
-    candidates = unionCandidates(memberWindows.values(), fromCivil, days);
-    memberSlotSets = new Map(
-      [...memberWindows].map(([memberKey, window]) => [
-        memberKey,
-        new Set(
-          candidateSlotsInRange(window, fromCivil, days).map((candidate) => candidate.startMs)
-        ),
-      ])
-    );
+    ({ candidates, memberSlotSets } = teamCandidates(memberWindows, fromCivil, days, requestedRange));
     overhangMin = widestOverhangMin([config, ...memberWindows.values()]);
   } else {
     candidates = candidateSlotsInRange(config, fromCivil, days);
@@ -661,7 +690,8 @@ export async function computeAvailabilityPlan(
     slotNowMs,
     quorum,
     memberSlotSets,
-    overhangMin
+    overhangMin,
+    investor,
   );
 
   let lookBusyPlan: LookBusyPlan | null = null;
@@ -680,7 +710,7 @@ export async function computeAvailabilityPlan(
     // The edge the read below applies, from the same instant, so the grid and
     // the open set always cover the same days. Slots past the real edge are
     // already gone from `slots`.
-    const horizonMs = horizonEdgeMs(config, midnightMs, overhangMin);
+    const horizonMs = investor?.toMs ?? horizonEdgeMs(config, midnightMs, overhangMin);
     const open = new Set(
       availableSlots(
         { ...config, minNoticeMinutes: 0 },
@@ -689,7 +719,8 @@ export async function computeAvailabilityPlan(
         midnightMs,
         quorum,
         memberSlotSets,
-        overhangMin
+        overhangMin,
+        investor,
       ).map((slot) => slot.startMs)
     );
     const grid = candidates
@@ -719,9 +750,7 @@ export async function computeAvailabilityPlan(
   return {
     response: {
       slots: slots.map((s) => new Date(s.startMs).toISOString()),
-      durationMinutes: config.durationMinutes,
-      hostTimezone: config.hostTimezone,
-      minNoticeMinutes: config.minNoticeMinutes,
+      ...metadata,
     },
     lookBusy: lookBusyPlan,
   };
@@ -734,9 +763,13 @@ export async function computeAvailabilityPlan(
  */
 export async function slotFreeMembers(
   startMs: number,
-  durationMinutes?: number
+  durationMinutes?: number,
+  options: Pick<AvailabilityOptions, "meetingType" | "config"> = {},
 ): Promise<{ free: Member[]; quorumMet: boolean }> {
-  const config = await getRuntimeMeetConfig();
+  const type = options.meetingType ?? "meeting";
+  const base = options.config ?? (type === "meeting" ? await getRuntimeMeetConfig() : await getEffectiveMeetConfig());
+  const config = configForMeetingType(base, type);
+  if (!config) return { free: [], quorumMet: false };
   if (config.mockMode) await ensureMockReady();
 
   const duration = durationMinutes ?? config.durationMinutes;
@@ -744,6 +777,8 @@ export async function slotFreeMembers(
     throw new Error("meet: slot duration must be a positive integer");
   }
   const endMs = startMs + duration * 60_000;
+  const period = type === "investor" ? investorWindow(config) : undefined;
+  if (period && (startMs < period.fromMs || endMs > period.toMs)) return { free: [], quorumMet: false };
   const busyMap = await withBookingsOverlay(
     await providerBusyByMember(config, startMs, endMs),
     startMs,
@@ -754,5 +789,7 @@ export async function slotFreeMembers(
     const busy = busyMap.get(member.key);
     return busy !== undefined && !overlapsBusy(busy, startMs, endMs);
   });
-  return { free, quorumMet: free.length >= config.quorum };
+  const required = type === "investor" ? config.investor?.requiredMember : undefined;
+  const quorumMet = free.length >= config.quorum && (!required || free.some((member) => member.key === required));
+  return { free, quorumMet };
 }

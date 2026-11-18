@@ -11,7 +11,9 @@ const mocks = vi.hoisted(() => ({
   config: {
     hostTimezone: "Europe/London",
     horizonDays: 30,
-    members: [{ key: "one", name: "One", email: "one@example.com" }],
+    durationMinutes: 30,
+    slotStepMinutes: 30,
+    members: ["one", "two", "three"].map((key) => ({ key, name: key, email: `${key}@example.com` })),
   } as Record<string, unknown>,
   compute: vi.fn(),
   getPage: vi.fn(),
@@ -20,7 +22,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/meet/availability", () => ({ computeAvailability: mocks.compute }));
 vi.mock("@/lib/meet/members", () => ({
-  getRuntimeMeetConfig: async () => mocks.config,
+  getEffectiveMeetConfig: async () => mocks.config,
 }));
 vi.mock("@/lib/meet/pages", () => ({ getPage: mocks.getPage }));
 vi.mock("@/lib/meet/ratelimit", () => ({ rateLimit: () => true }));
@@ -48,6 +50,7 @@ beforeEach(() => {
   vi.spyOn(Date, "now").mockReturnValue(NOW);
   mocks.compute.mockResolvedValue({ slots: [] });
   mocks.getPage.mockResolvedValue(null);
+  delete mocks.config.investor;
 });
 
 afterEach(() => vi.restoreAllMocks());
@@ -90,6 +93,42 @@ describe("public availability window", () => {
     await get("?token=manage-token");
 
     expect(requested()).toEqual({ from: "2026-10-05", days: 10 });
+  });
+
+  it("uses the stored Investor policy when rescheduling despite conflicting host and type", async () => {
+    mocks.config.investor = {
+      startDate: "2027-03-08", endDate: "2027-03-14", requiredMember: "one", partners: ["two", "three"],
+    };
+    mocks.getBookingByToken.mockResolvedValue({
+      status: "confirmed", pageKey: "", attendeeMemberKeys: ["one", "three"],
+      durationMinutes: 30, meetingType: "investor",
+    });
+    expect((await get("?token=managed&host=unknown&type=chat")).status).toBe(200);
+    expect(mocks.getPage).not.toHaveBeenCalled();
+    expect(requested()).toEqual({ from: "2027-03-08", days: 7 });
+    expect(mocks.compute.mock.calls[0][2]).toMatchObject({
+      requiredMemberKeys: ["one", "three"], meetingType: "investor", hostKey: undefined,
+    });
+  });
+
+  it("preserves a legacy booking's duration and type", async () => {
+    mocks.getBookingByToken.mockResolvedValue({
+      status: "confirmed", pageKey: "", attendeeMemberKeys: ["two"], durationMinutes: 45,
+    });
+    expect((await get("?token=managed&type=investor")).status).toBe(200);
+    expect(mocks.compute.mock.calls[0][2]).toMatchObject({
+      meetingType: "meeting", durationMinutes: 45, config: { durationMinutes: 45 },
+    });
+  });
+
+  it("offers the team chat and rejects unavailable team or personal options", async () => {
+    expect((await get("?type=chat")).status).toBe(200);
+    expect(mocks.compute.mock.calls[0][2]).toMatchObject({ meetingType: "chat", config: { quorum: 1, durationMinutes: 15 } });
+    expect((await get("?type=investor")).status).toBe(404);
+    expect((await get("?type=unknown")).status).toBe(400);
+    mocks.getPage.mockResolvedValue({ enabled: true, member: { key: "one" }, config: mocks.config });
+    expect((await get("?host=one&type=investor")).status).toBe(404);
+    expect((await get("?host=one&type=chat")).status).toBe(404);
   });
 
   it("keeps an explicit day count inside the horizon's span", async () => {
