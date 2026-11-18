@@ -22,6 +22,7 @@ import {
 import type { AvailabilityResponse, MeetingType } from "@/lib/meet/types";
 import { availabilityUrl } from "./AvailabilityPrime";
 import styles from "./SlotPicker.module.css";
+import { SelectedSlotSummary } from "@/components/meet/SelectedSlotSummary";
 import { TimezoneSelect } from "@/components/meet/TimezoneSelect";
 
 /**
@@ -903,7 +904,7 @@ export function SlotPicker(props: {
 
   const summaryLabel =
     activeDay && activeSlots.length > 0
-      ? longDayFmt.format(Date.parse(activeSlots[0]))
+      ? shortDayFmt.format(Date.parse(activeSlots[0]))
       : (activeDay ?? "");
 
   return (
@@ -951,7 +952,7 @@ export function SlotPicker(props: {
                 type="button"
                 disabled={selecting}
                 onClick={() => setPickedDay(null)}
-                className={`mb-3 inline-flex w-full items-center justify-between gap-3 rounded-xl border border-hairline bg-paper-raise px-4 py-3 text-left transition-colors duration-150 hover:border-hairline-strong ${FOCUS_RING}`}
+                className={`mb-3 flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-xl border border-hairline bg-paper-raise px-4 py-3 text-left transition-colors duration-150 hover:border-hairline-strong ${FOCUS_RING}`}
               >
                 <span className="text-sm font-medium text-ink">{summaryLabel}</span>
                 <span className="shrink-0 text-sm font-medium text-accent">Change date</span>
@@ -972,11 +973,11 @@ export function SlotPicker(props: {
                 type="button"
                 disabled={selecting}
                 onClick={() => onClearSlot?.()}
-                className={`mb-3 inline-flex w-full items-center justify-between gap-3 rounded-xl border border-hairline bg-paper-raise px-4 py-3 text-left transition-colors duration-150 hover:border-hairline-strong ${FOCUS_RING}`}
+                className={`mb-3 flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-xl border border-hairline bg-paper-raise px-4 py-3 text-left transition-colors duration-150 hover:border-hairline-strong ${FOCUS_RING}`}
               >
-                <span className="text-sm font-medium text-ink">
-                  {summaryLabel}, {selectedSlot ? timeFmt.format(Date.parse(selectedSlot)) : ""}
-                </span>
+                {selectedSlot && (
+                  <SelectedSlotSummary start={selectedSlot} durationMinutes={durationMinutes} timezone={timezone} />
+                )}
                 <span className="shrink-0 text-sm font-medium text-accent">Change time</span>
               </button>
               <div className={`${styles.panel} p-4`}>{formSlot}</div>
