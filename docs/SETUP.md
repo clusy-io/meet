@@ -5,7 +5,7 @@ This guide configures a standalone Meet deployment at an origin such as
 
 ## 1. Database
 
-Create a Supabase project and run [`schema.sql`](schema.sql) in its SQL editor.
+Create a Supabase project using PostgreSQL 14 or later and run [`schema.sql`](schema.sql) in its SQL editor.
 The script creates `meet_members`, `meet_accounts`, `meet_bookings`, `meet_page_settings`, enables RLS,
 and adds newer guest/reminder columns with explicit additive migrations.
 
@@ -38,6 +38,12 @@ level. Every existing row reads as off, and the store reads a missing column
 as off, so this one is also safe in either order; until it exists, only saving
 a look-busy switch fails. The focused migration is at
 [`migrations/2026-11-14-look-busy.sql`](migrations/2026-11-14-look-busy.sql).
+
+Before deploying meeting selection to an existing installation, apply the
+[meeting types migration](migrations/2026-11-18-meeting-types.sql). It records
+the type of each new booking and prevents concurrent bookings from assigning
+an investor call and an overlapping call to the same host. Older bookings keep
+their existing times and are treated as regular meetings.
 
 ## 2. Google OAuth
 
@@ -81,6 +87,9 @@ Start from `.env.example`, leave `MEET_MOCK_MODE` empty, and set:
 | `MEET_TIMEZONE_UNTIL` | Optional `YYYY-MM-DD:IANA/Zone`; days before the date use the named old zone, then switch to `MEET_HOST_TIMEZONE` |
 | `MEET_WINDOW_START`, `MEET_WINDOW_END` | Local booking window in `HH:MM` |
 | `MEET_DURATION_MINUTES` | Event duration |
+| `MEET_INVESTOR_START_DATE`, `MEET_INVESTOR_END_DATE` | First and last dates for 30-minute Investor calls, inclusive in the host timezone. This window can sit beyond the regular booking horizon. |
+| `MEET_INVESTOR_REQUIRED_MEMBER` | Roster key of the person who must attend every Investor call. |
+| `MEET_INVESTOR_PARTNERS` | Comma-separated roster keys. One of these partners must also be available. |
 | `MEET_SLOT_STEP_MINUTES` | Grid step; must be at least the duration |
 | `MEET_MIN_NOTICE_MINUTES` | Minimum advance notice |
 | `MEET_HORIZON_DAYS` | Last bookable day, counted in days from today in the host timezone. Default 30 (about a month), maximum 366. An overnight window's last night stays bookable past that day's midnight |
@@ -95,6 +104,10 @@ Start from `.env.example`, leave `MEET_MOCK_MODE` empty, and set:
 | `SUPABASE_SERVICE_ROLE_KEY` | Server-only database credential |
 | `MEET_SLACK_WEBHOOK_URL` | Optional. Slack Incoming Webhook for booking notices |
 | `MEET_SLACK_ENABLED_AT` | Optional. Canonical ISO-Z instant; the on switch, and the cutoff before which nothing is announced |
+
+The team selector at `/` links to `/book/chat` and `/book/meeting`. Set all four
+`MEET_INVESTOR_*` variables to add `/book/investor`. Personal pages retain
+their existing `/<member key>` URLs.
 
 Generate secrets independently:
 

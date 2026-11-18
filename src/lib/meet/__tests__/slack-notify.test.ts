@@ -79,6 +79,16 @@ describe("notifyBookingSlack", () => {
     expect(event).toMatchObject({ type: "confirmed", hostName: null, bookerName: "Booker" });
   });
 
+  it("names the assigned pair in team-channel investor notices", async () => {
+    await notifyBookingSlack(
+      booking({ meetingType: "investor", attendeeMemberKeys: ["ada", "sam"] }),
+      "confirmed",
+    );
+    const [url, event] = mocks.post.mock.calls[0];
+    expect(url).toBe(TEAM_HOOK);
+    expect(event).toMatchObject({ meetingType: "investor", hostName: "Ada and Sam" });
+  });
+
   it("routes a personal booking to that page's webhook and names the host", async () => {
     await notifyBookingSlack(booking({ pageKey: "ada" }), "confirmed");
     const [url, event] = mocks.post.mock.calls[0];

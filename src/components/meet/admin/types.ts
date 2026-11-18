@@ -1,6 +1,7 @@
 import type { LookBusyLevel } from "@/lib/meet/lookBusyLevels";
 import type {
   CalendarProviderId,
+  MeetingType,
   Member,
   SelectedCalendar,
 } from "@/lib/meet/types";
@@ -36,6 +37,7 @@ export interface CalendarEntry {
 /** One operational row from GET /api/meet/admin/bookings. */
 export interface AdminBooking {
   id: string;
+  meetingType?: MeetingType | null;
   startAt: string;
   endAt: string;
   durationMinutes: number;

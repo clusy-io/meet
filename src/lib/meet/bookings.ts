@@ -12,6 +12,8 @@ import {
   getHistoricalMeetConfig,
   getRuntimeMeetConfig,
 } from "./members";
+import { configForMeetingType, investorWindow } from "./meetingTypes";
+import { MEETING_TYPES } from "./types";
 import { getHistoricalPage, getPage, teamMemberWindows } from "./pages";
 import { getProvider } from "./providers";
 import { notifyBookingSlack } from "./slackNotify";
@@ -65,6 +67,7 @@ function validateSlotStart(
   start: string,
   timezone: string,
   grids: Iterable<MeetConfig> = [config],
+  fixedWindow?: { fromMs: number; toMs: number },
 ): { ok: true; startMs: number } | BookingActionError {
   const startMs = Date.parse(start);
   if (Number.isNaN(startMs))
@@ -81,6 +84,13 @@ function validateSlotStart(
   const nowMs = Date.now();
   if (startMs < nowMs + config.minNoticeMinutes * 60_000) {
     return unavailable("That time is too soon to book.");
+  }
+  if (fixedWindow) {
+    const endMs = startMs + config.durationMinutes * 60_000;
+    if (startMs < fixedWindow.fromMs || endMs > fixedWindow.toMs) {
+      return unavailable("That time is outside the Investor booking dates.");
+    }
+    return { ok: true, startMs };
   }
   // The same edge availability offered against, overnight tail included. A
   // bare host-tz midnight edge refused the last night's after-midnight starts
@@ -254,10 +264,22 @@ export function bookingEventDescription(
   return parts.join("\n\n");
 }
 
+/** Rotate across eligible hosts without shared state. */
+function oneHostForSlot(eligible: Member[], startMs: number): Member[] {
+  if (eligible.length === 0) return [];
+  const index = Math.floor(startMs / (30 * 60_000)) % eligible.length;
+  return [eligible[index]];
+}
+
 export async function createBooking(
   req: CreateBookingRequest,
 ): Promise<{ ok: true; booking: Booking } | BookingActionError> {
-  const config = await getRuntimeMeetConfig();
+  const meetingType = req.meetingType ?? "meeting";
+  if (!MEETING_TYPES.includes(meetingType)) return invalid("Unknown meeting type.");
+  if (req.host && meetingType !== "meeting") return invalid("Unknown meeting type on this page.");
+  const config = meetingType === "meeting"
+    ? await getRuntimeMeetConfig()
+    : await getEffectiveMeetConfig();
   const store = getMeetStore();
 
   // Defensive re-validation: the route validates too, but this module must
@@ -280,50 +302,44 @@ export async function createBooking(
   // The page's own window, duration and grid. validateSlotStart must see the
   // SAME config the page offered slots from, or it rejects the very slots the
   // visitor just picked.
-  const effective = page ? page.config : config;
-
-  const windows = page ? null : await teamMemberWindows(config);
+  const effective = page?.config ?? configForMeetingType(config, meetingType);
+  if (!effective) return invalid("This meeting type is not available.");
+  const windows = page ? null : await teamMemberWindows(effective);
   const validated = validateSlotStart(
     effective,
     req.start,
     req.timezone,
     windows?.values() ?? [effective],
+    meetingType === "investor" ? investorWindow(effective) : undefined,
   );
   if (!validated.ok) return validated;
   const { startMs } = validated;
 
-  const { free, quorumMet } = await slotFreeMembers(
-    startMs,
-    effective.durationMinutes,
-  );
-  if (page) {
-    // Quorum neither implies nor is implied by "this host is free": 2 of 3 can
-    // be free with the host among the busy ones.
-    if (!free.some((m) => m.key === page.member.key)) {
-      return unavailable("That time is no longer available.");
-    }
-  } else if (!quorumMet) {
-    return unavailable("That time is no longer available.");
-  }
-  const eligibleFree = page
-    ? free
-    : free.filter((member) => {
+  const { free } = await slotFreeMembers(startMs, effective.durationMinutes, {
+    meetingType, config: effective,
+  });
+  const freeKeys = new Set(free.map((member) => member.key));
+  const eligible = page
+    ? [page.member].filter((member) => freeKeys.has(member.key))
+    : effective.members.filter((member) => {
         const window = windows?.get(member.key);
-        return window !== undefined && slotOnGrid(window, startMs);
+        return freeKeys.has(member.key) && window !== undefined && slotOnGrid(window, startMs);
       });
-  if (!page && eligibleFree.length < config.quorum) {
-    return unavailable("That time is no longer available.");
+  let attending = eligible;
+  if (meetingType === "chat") {
+    attending = oneHostForSlot(eligible, startMs);
+  } else if (meetingType === "investor") {
+    const policy = effective.investor;
+    const required = eligible.find((member) => member.key === policy?.requiredMember);
+    const partners = eligible.filter((member) => policy?.partners.includes(member.key));
+    attending = required ? [required, ...oneHostForSlot(partners, startMs)] : [];
   }
-  const attending = page
-    ? [page.member]
-    : membersInConfigOrder(
-        config,
-        eligibleFree.map((m) => m.key),
-      );
+  if (attending.length < effective.quorum) return unavailable("That time is no longer available.");
 
   const nowIso = new Date().toISOString();
   const booking: Booking = {
     id: crypto.randomUUID(),
+    meetingType,
     pageKey: page ? page.member.key : "",
     startAt: new Date(startMs).toISOString(),
     endAt: new Date(startMs + effective.durationMinutes * 60_000).toISOString(),
@@ -424,13 +440,13 @@ export async function createBooking(
           description: bookingEventDescription(effective, booking),
           startAt: booking.startAt,
           endAt: booking.endAt,
-          // Team page keeps inviting every member, busy ones included, as an
-          // FYI they can decline. A personal page invites only its owner.
+          // The regular team meeting invites the full roster, including FYIs.
+          // Personal calls, chats and Investor meetings invite their assigned hosts.
           attendees: eventAttendees(
             config,
             booking,
             organizer.account.email,
-            page ? attending : config.members,
+            page || meetingType !== "meeting" ? attending : config.members,
           ),
           withConference: organizer.withConference,
         });
@@ -693,7 +709,10 @@ export async function rescheduleBooking(
     return invalid("This booking has ended and cannot be rescheduled.");
   }
 
-  const config = await getRuntimeMeetConfig();
+  const meetingType = booking.meetingType ?? "meeting";
+  const config = meetingType === "meeting"
+    ? await getRuntimeMeetConfig()
+    : await getEffectiveMeetConfig();
 
   // The page's own window and duration, exactly as createBooking does. Keying
   // this off the global config made a personal page with its own duration
@@ -704,14 +723,17 @@ export async function rescheduleBooking(
   if (booking.pageKey && !reschedulePage) {
     return invalid("That booking page is no longer available.");
   }
-  const effective = reschedulePage ? reschedulePage.config : config;
+  const pageConfig = reschedulePage?.config ?? configForMeetingType(config, meetingType);
+  if (!pageConfig) return unavailable("This meeting type is no longer available.");
+  const effective = { ...pageConfig, durationMinutes: booking.durationMinutes };
 
-  const windows = reschedulePage ? null : await teamMemberWindows(config);
+  const windows = reschedulePage ? null : await teamMemberWindows(effective);
   const validated = validateSlotStart(
     effective,
     req.start,
     req.timezone,
     windows?.values() ?? [effective],
+    meetingType === "investor" ? investorWindow(effective) : undefined,
   );
   if (!validated.ok) return validated;
   const { startMs } = validated;
@@ -720,7 +742,9 @@ export async function rescheduleBooking(
   // than at create time: every committed attendee must be free at the new
   // time, or someone gets silently double-booked. The reschedule UI fetches
   // availability constrained to these members, so slots it shows pass this.
-  const { free } = await slotFreeMembers(startMs, booking.durationMinutes);
+  const { free } = meetingType === "meeting"
+    ? await slotFreeMembers(startMs, booking.durationMinutes)
+    : await slotFreeMembers(startMs, booking.durationMinutes, { meetingType, config: effective });
   const freeKeys = new Set(free.map((m) => m.key));
   const attendeesFree = booking.attendeeMemberKeys.every((key) => {
     if (!freeKeys.has(key)) return false;
@@ -728,7 +752,15 @@ export async function rescheduleBooking(
     const window = windows?.get(key);
     return window !== undefined && slotOnGrid(window, startMs);
   });
-  if (!attendeesFree) {
+  // An Investor policy may have changed since creation. Keep the original
+  // attendees and require them to satisfy the current host policy.
+  const investor = effective.investor;
+  const investorHostsFit = meetingType !== "investor" || (
+    investor &&
+    booking.attendeeMemberKeys.includes(investor.requiredMember) &&
+    booking.attendeeMemberKeys.some((key) => investor.partners.includes(key))
+  );
+  if (!attendeesFree || !investorHostsFit) {
     return unavailable("That time does not work for this meeting's attendees.");
   }
 
@@ -896,6 +928,7 @@ export function toBookingView(
     : undefined;
   return {
     id: b.id,
+    meetingType: b.meetingType ?? "meeting",
     pageKey: b.pageKey,
     // Null for a team booking, and also for a page key that no longer names a
     // configured member, so the UI falls back to the team wording.

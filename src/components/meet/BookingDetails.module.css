@@ -1,0 +1,127 @@
+.card {
+  border: 1px solid var(--hairline);
+  border-radius: 18px;
+  background: var(--paper-raise);
+  padding: clamp(1.25rem, 4vw, 2.25rem);
+  box-shadow: 0 2px 5px hsl(var(--ink) / 0.025), 0 16px 40px -26px hsl(var(--ink) / 0.2);
+}
+
+.title {
+  font-family: var(--font-libre), Georgia, serif;
+  font-size: clamp(1.8rem, 3.8vw, 2.45rem);
+  line-height: 1.1;
+  letter-spacing: -0.035em;
+  font-weight: 400;
+  text-wrap: balance;
+  color: hsl(var(--ink));
+}
+
+.summary {
+  border-block: 1px solid var(--hairline);
+  margin-block: 1.25rem;
+  padding-block: 1rem;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: hsl(var(--ink-soft));
+}
+
+.primary,
+.secondary {
+  display: inline-flex;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  border-radius: 0.65rem;
+  padding: 0.625rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.25;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.primary {
+  background: hsl(var(--accent));
+  color: var(--paper-raise);
+}
+
+.primary:hover:enabled,
+a.primary:hover {
+  background: color-mix(in srgb, hsl(var(--accent)) 87%, hsl(var(--ink)));
+}
+
+.secondary {
+  border: 1px solid var(--hairline);
+  background: var(--paper-raise);
+}
+
+.secondary:hover:enabled,
+a.secondary:hover {
+  border-color: var(--hairline-strong);
+  background: var(--paper);
+}
+
+.primary:focus-visible,
+.secondary:focus-visible {
+  outline: 2px solid hsl(var(--accent));
+  outline-offset: 3px;
+}
+
+.primary:disabled,
+.secondary:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.form {
+  container-type: inline-size;
+}
+
+.fields {
+  display: grid;
+  gap: 1rem;
+}
+
+@container (min-width: 27rem) {
+  .fields {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.label {
+  display: block;
+  margin-bottom: 0.375rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.35;
+  color: hsl(var(--ink-soft));
+}
+
+.input {
+  display: block;
+  width: 100%;
+  min-height: 2.75rem;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 0.625rem;
+  background: var(--paper-raise);
+  padding: 0.625rem 0.75rem;
+  font-size: 1rem;
+  line-height: 1.45;
+  color: hsl(var(--ink));
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.input::placeholder {
+  color: hsl(var(--ink-faint));
+}
+
+.input:focus {
+  border-color: hsl(var(--accent));
+  outline: 2px solid transparent;
+  box-shadow: 0 0 0 3px hsl(var(--accent) / 0.12);
+}
+
+.input:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}

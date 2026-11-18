@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { MeetConfig } from "@/lib/meet/config";
 import type { Booking, CalendarAccount } from "@/lib/meet/types";
 
 const mocks = vi.hoisted(() => {
@@ -18,6 +19,7 @@ const mocks = vi.hoisted(() => {
       horizonDays: 30,
       members,
       quorum: 2,
+      investor: undefined as MeetConfig["investor"],
       eventTitle: "Call with {name}",
       eventDescription: "A test call",
       brandName: "Test",
@@ -172,6 +174,88 @@ describe("booking delivery and duration invariants", () => {
   });
 
   afterEach(() => vi.restoreAllMocks());
+
+  describe("team meeting types", () => {
+    const request = {
+      name: "Visitor", email: "visitor@example.com", timezone: "UTC",
+      start: new Date(START_MS).toISOString(),
+    };
+    const march = { ...request, start: "2027-03-01T10:00:00Z", meetingType: "investor" as const };
+
+    beforeEach(() => {
+      mocks.config.investor = {
+        startDate: "2027-03-01", endDate: "2027-03-21",
+        requiredMember: "one", partners: ["two", "three"],
+      };
+    });
+    afterEach(() => { mocks.config.investor = undefined; });
+
+    it("books a chat with a single free teammate below the regular quorum", async () => {
+      const onlyHost = mocks.config.members[1];
+      mocks.slotFreeMembers.mockResolvedValue({ free: [onlyHost], quorumMet: false });
+      const result = await createBooking({ ...request, meetingType: "chat" });
+      expect(result).toMatchObject({ ok: true, booking: {
+        meetingType: "chat", durationMinutes: 15, attendeeMemberKeys: [onlyHost.key],
+      } });
+    });
+
+    it("books the required host and an available partner beyond the rolling horizon", async () => {
+      expect(await createBooking(march)).toMatchObject({ ok: true, booking: {
+        meetingType: "investor", durationMinutes: 30, attendeeMemberKeys: ["one", "two"],
+      } });
+    });
+
+    it("assigns and invites only the required host and one partner when both partners are free", async () => {
+      const extra = { key: "three", name: "Three", email: "three@example.com" };
+      mocks.listMemberRecords.mockResolvedValue([{ ...extra, archivedAt: null }]);
+      mocks.slotFreeMembers.mockResolvedValue({ free: [...mocks.config.members, extra], quorumMet: true });
+      mocks.listAccounts.mockResolvedValue([account("org", "one", "google", "one@example.com")]);
+      mocks.googleCreate.mockResolvedValue({ eventId: "investor", meetingUrl: "https://meet.example.com/test" });
+
+      const result = await createBooking(march);
+      if (!result.ok) throw new Error("expected an Investor booking");
+      const hosts = result.booking.attendeeMemberKeys;
+      expect(hosts).toHaveLength(2);
+      expect(hosts[0]).toBe("one");
+      expect(["two", "three"]).toContain(hosts[1]);
+      expect(mocks.googleCreate.mock.calls[0][1].attendees.map(({ email }: { email: string }) => email))
+        .toEqual([request.email, `${hosts[1]}@example.com`]);
+    });
+
+    it("refuses a missing required host, missing partner or a time outside the campaign", async () => {
+      for (const member of mocks.config.members) {
+        mocks.slotFreeMembers.mockResolvedValue({ free: [member], quorumMet: false });
+        expect(await createBooking(march)).toMatchObject({ ok: false, code: "slot_unavailable" });
+      }
+      mocks.slotFreeMembers.mockResolvedValue({ free: mocks.config.members, quorumMet: true });
+      for (const start of ["2027-02-26T10:00:00Z", "2027-03-22T10:00:00Z"]) {
+        expect(await createBooking({ ...march, start })).toMatchObject({ ok: false, code: "slot_unavailable" });
+      }
+      expect(mocks.insertBooking).not.toHaveBeenCalled();
+    });
+
+    it("keeps Investor dates and its original host pair on reschedule", async () => {
+      const created = await createBooking(march);
+      if (!created.ok) throw new Error("expected an Investor booking");
+      mocks.getBookingByToken.mockResolvedValue(created.booking);
+      const move = (start: string) => rescheduleBooking("token", { start, timezone: "UTC" });
+      expect(await move("2027-03-22T10:00:00Z")).toMatchObject({ ok: false, code: "slot_unavailable" });
+      mocks.slotFreeMembers.mockResolvedValueOnce({ free: [mocks.config.members[0]], quorumMet: false });
+      expect(await move("2027-03-05T10:00:00Z")).toMatchObject({ ok: false, code: "slot_unavailable" });
+      expect(await move("2027-03-19T10:00:00Z")).toMatchObject({ ok: true, booking: {
+        meetingType: "investor", attendeeMemberKeys: ["one", "two"],
+      } });
+    });
+
+    it("rejects disabled Investor bookings and team types on personal pages", async () => {
+      mocks.config.investor = undefined;
+      expect(await createBooking(march)).toMatchObject({ ok: false, code: "invalid" });
+      expect(await createBooking({ ...march, host: "one" })).toMatchObject({ ok: false, code: "invalid" });
+      expect(await createBooking({ ...request, meetingType: "chat", host: "one" }))
+        .toMatchObject({ ok: false, code: "invalid" });
+      expect(mocks.insertBooking).not.toHaveBeenCalled();
+    });
+  });
 
   it("degrades booking sync status when confirmation delivery fails", async () => {
     mocks.sendConfirmed.mockRejectedValueOnce(
@@ -811,14 +895,23 @@ describe("booking delivery and duration invariants", () => {
       expect(await book(dayAfter, "one")).toMatchObject(beyond);
     });
 
-    it("reschedules onto the last night's after-midnight start", async () => {
-      mocks.getBookingByToken.mockResolvedValue(existingBooking());
+    it("reschedules a half-hour booking onto the last night's final half-hour", async () => {
+      mocks.getBookingByToken.mockResolvedValue({
+        ...existingBooking(), endAt: "2026-08-14T10:30:00Z", durationMinutes: 30,
+      });
 
       const moved = await rescheduleBooking("manage-token", {
         start: lastNight,
         timezone: "UTC",
       });
       expect(moved.ok).toBe(true);
+    });
+
+    it("requires a legacy booking's full hour to fit the overnight window", async () => {
+      mocks.getBookingByToken.mockResolvedValue(existingBooking());
+      const result = await rescheduleBooking("manage-token", { start: lastNight, timezone: "UTC" });
+      expect(result).toMatchObject({ ok: false, code: "slot_unavailable" });
+      expect(mocks.updateBookingTime).not.toHaveBeenCalled();
     });
 
     it("refuses a reschedule past the horizon", async () => {

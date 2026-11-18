@@ -16,6 +16,11 @@ runs at [clusy.io/meet](https://clusy.io/meet).
 
 ## What you get
 
+**Meeting selection.** Visitors can choose a 15-minute Chat with any available
+teammate or a Meeting with your configured duration and quorum. Enable Investor
+to offer 30-minute calls during a specific date range, with a required host and
+one available partner. Each option has a direct link, such as `/book/chat`.
+
 **Team availability** across any mix of Google Calendar and Microsoft Outlook
 accounts, with a configurable quorum and per-account busy calendars. Each host
 can keep their own IANA timezone, working hours and weekdays, including hours
@@ -335,8 +340,8 @@ broken by a fix to one of the others:
 
 ```bash
 MEET_MOCK_MODE=1 npm run dev
-node docs/slotpicker-invariants.mjs http://localhost:3000
-node docs/loading-geometry.mjs http://localhost:3000
+node docs/slotpicker-invariants.mjs http://localhost:3000/book/meeting
+node docs/loading-geometry.mjs http://localhost:3000/book/meeting
 ```
 
 The first checks the time column and, in a second pass, that nothing mismatches

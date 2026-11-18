@@ -235,26 +235,25 @@ export function availableSlots(
    * passes the widest overhang across its members, so one member's late
    * window does not get its last night truncated by the team default.
    */
-  overhangMin: number = overnightOverhangMin(config)
+  overhangMin: number = overnightOverhangMin(config),
+  investor?: { fromMs: number; toMs: number; requiredMember: string },
 ): Array<{ startMs: number; freeMemberKeys: string[] }> {
   const minStartMs = nowMs + config.minNoticeMinutes * 60_000;
-  const horizonMs = horizonEdgeMs(config, nowMs, overhangMin);
+  const horizonMs = investor?.toMs ?? horizonEdgeMs(config, nowMs, overhangMin);
 
   const out: Array<{ startMs: number; freeMemberKeys: string[] }> = [];
   for (const slot of candidates) {
     if (slot.startMs < minStartMs) continue;
     if (slot.startMs >= horizonMs) continue;
+    if (investor && (slot.startMs < investor.fromMs || slot.endMs > investor.toMs)) continue;
     const free: string[] = [];
     for (const [memberKey, busy] of memberBusy) {
-      const allowed = memberSlotSets?.get(memberKey);
-      if (
-        (allowed === undefined || allowed.has(slot.startMs)) &&
-        !overlapsBusy(busy, slot.startMs, slot.endMs)
-      ) {
+      if (memberSlotSets && !memberSlotSets.get(memberKey)?.has(slot.startMs)) continue;
+      if (!overlapsBusy(busy, slot.startMs, slot.endMs)) {
         free.push(memberKey);
       }
     }
-    if (free.length >= quorum) {
+    if (free.length >= quorum && (!investor || free.includes(investor.requiredMember))) {
       out.push({ startMs: slot.startMs, freeMemberKeys: free });
     }
   }

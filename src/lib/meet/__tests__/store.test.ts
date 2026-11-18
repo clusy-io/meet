@@ -47,6 +47,35 @@ function makeAccountInput(
 }
 
 describe("MemoryMeetStore bookings", () => {
+  it("rejects an Investor host conflict across pages on insert and reschedule", async () => {
+    const store = new MemoryMeetStore();
+    const investor = makeBooking({ meetingType: "investor", attendeeMemberKeys: ["ava", "ben"] });
+    const personal = makeBooking({
+      pageKey: "ben",
+      attendeeMemberKeys: ["ben"],
+      startAt: "2026-08-20T15:45:00.000Z",
+      endAt: "2026-08-20T16:15:00.000Z",
+    });
+    const taken = { ok: false, reason: "slot_taken" };
+    expect(await store.insertBooking(investor)).toEqual({ ok: true });
+    expect(await store.insertBooking(personal)).toEqual(taken);
+    expect(await store.insertBooking(makeBooking({ pageKey: "lee", attendeeMemberKeys: ["lee"] })))
+      .toEqual({ ok: true });
+    const adjacent = { ...personal, startAt: investor.endAt, endAt: "2026-08-20T16:30:00.000Z" };
+    expect(await store.insertBooking(adjacent)).toEqual({ ok: true });
+    expect(await store.updateBookingTime(adjacent.id, adjacent.startAt, personal.startAt, personal.endAt, []))
+      .toEqual(taken);
+    expect((await store.getBookingByToken(adjacent.manageToken))?.startAt).toBe(adjacent.startAt);
+
+    // A historical booking without an assigned host occupies every calendar.
+    const legacyStore = new MemoryMeetStore();
+    const legacy = makeBooking({ pageKey: "another-page", attendeeMemberKeys: [] });
+    await legacyStore.insertBooking(legacy);
+    expect(await legacyStore.insertBooking(investor)).toEqual(taken);
+    await legacyStore.transitionToCancelled(legacy.id, legacy.startAt);
+    expect(await legacyStore.insertBooking(investor)).toEqual({ ok: true });
+  });
+
   it("rejects a second confirmed booking at the same startAt", async () => {
     const store = new MemoryMeetStore();
     expect(await store.insertBooking(makeBooking())).toEqual({ ok: true });
@@ -334,7 +363,16 @@ describe("MemoryMeetStore member records", () => {
     await expect(store.hasFutureConfirmedBookingForMember("ended", cutoff)).resolves.toBe(false);
   });
 
-  it("treats every future team booking as naming the full roster, including legacy rows", async () => {
+  it.each(["chat", "investor"] as const)("protects only the assigned hosts of a %s", async (meetingType) => {
+    const store = new MemoryMeetStore();
+    const booking = makeBooking({ meetingType, attendeeMemberKeys: ["assigned"] });
+    await store.insertBooking(booking);
+    const now = Date.parse(booking.startAt) - 1;
+    expect(await store.hasFutureConfirmedBookingForMember("assigned", now)).toBe(true);
+    expect(await store.hasFutureConfirmedBookingForMember("another-member", now)).toBe(false);
+  });
+
+  it("treats future legacy team bookings as naming the full roster", async () => {
     const cutoff = Date.parse("2026-08-20T15:00:00.000Z");
     const assigned = new MemoryMeetStore();
     assigned.bookings.push(

@@ -3,9 +3,10 @@
 import { Video } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import styles from "./BookingDetails.module.css";
 import { SlotPicker } from "@/components/meet/SlotPicker";
-import type { BookingView } from "@/lib/meet/types";
 import { SITE } from "@/meet.config";
+import type { BookingView } from "@/lib/meet/types";
 
 /**
  * Self-serve booking management: cancel and reschedule via the manage token.
@@ -48,6 +49,7 @@ function isBookingView(value: unknown): value is BookingView {
   const b = value as Record<string, unknown>;
   return (
     typeof b.id === "string" &&
+    (b.meetingType === "meeting" || b.meetingType === "chat" || b.meetingType === "investor") &&
     typeof b.startAt === "string" &&
     typeof b.endAt === "string" &&
     typeof b.status === "string" &&
@@ -67,17 +69,21 @@ function extractMessage(data: unknown): string | null {
   return typeof message === "string" && message.length > 0 ? message : null;
 }
 
-const SUBTLE_BUTTON =
-  "rounded-md border border-hairline px-4 py-2 text-sm transition-colors hover:border-hairline-strong disabled:cursor-default disabled:opacity-50";
-
 export default function ManageBooking({
   initial,
   hostTimezone,
+  rebookHref,
+  initialDate,
+  canReschedule = true,
 }: {
   initial: BookingView;
   hostTimezone: string;
+  rebookHref: string;
+  initialDate?: string;
+  canReschedule?: boolean;
 }) {
   const [booking, setBooking] = useState<BookingView>(initial);
+  const bookingNoun = booking.meetingType === "investor" ? "investor meeting" : booking.meetingType;
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [rescheduling, setRescheduling] = useState(false);
   const [pending, setPending] = useState(false);
@@ -90,8 +96,9 @@ export default function ManageBooking({
   const [pickerKey, setPickerKey] = useState(0);
   const noticeTimer = useRef<number | null>(null);
   const cancelHeadingRef = useRef<HTMLParagraphElement | null>(null);
-  const cancelledHeadingRef = useRef<HTMLParagraphElement | null>(null);
+  const cancelledHeadingRef = useRef<HTMLHeadingElement | null>(null);
   const rescheduleButtonRef = useRef<HTMLButtonElement | null>(null);
+  const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     return () => {
@@ -161,13 +168,13 @@ export default function ManageBooking({
 
   if (booking.status === "cancelled") {
     return (
-      <section className="rounded-lg border border-hairline bg-paper-raise p-6 sm:p-8">
-        <p ref={cancelledHeadingRef} tabIndex={-1} className="text-sm text-ink-mute">
+      <section className={`${styles.card} mx-auto max-w-2xl`}>
+        <h1 ref={cancelledHeadingRef} tabIndex={-1} className={styles.title}>
           This booking was cancelled.
-        </p>
+        </h1>
         <Link
-          href="/"
-          className="mt-3 inline-block text-sm text-ink underline underline-offset-4 transition-opacity hover:opacity-80"
+          href={rebookHref}
+          className={`${styles.secondary} mt-5 text-accent`}
         >
           Book a new time
         </Link>
@@ -178,14 +185,14 @@ export default function ManageBooking({
   return (
     <section
       aria-busy={pending}
-      className="rounded-lg border border-hairline bg-paper-raise p-6 sm:p-8"
+      className={`${styles.card} mx-auto ${rescheduling ? "max-w-5xl" : "max-w-2xl"}`}
     >
-      <h1 className="font-serif-display text-xl tracking-[-0.02em] text-ink sm:text-2xl">
-        Your call with the {SITE.name} team
+      <h1 className={styles.title}>
+        Your {bookingNoun} with {booking.hostName ?? `the ${SITE.name} team`}
       </h1>
 
-      <div className="mt-5 space-y-1">
-        <p className="text-sm text-ink">
+      <div className={`${styles.summary} space-y-1`}>
+        <p className="font-semibold text-ink">
           Your time: {formatInZone(booking.startAt, booking.timezone)}
         </p>
         {booking.timezone !== hostTimezone ? (
@@ -193,7 +200,9 @@ export default function ManageBooking({
             {SITE.name} time: {formatInZone(booking.startAt, hostTimezone)}
           </p>
         ) : null}
-        <p className="text-sm text-ink-mute">{booking.durationMinutes} minutes</p>
+        <p className="text-sm text-ink-mute">
+          {booking.durationMinutes}-minute {bookingNoun}
+        </p>
       </div>
 
       {notice ? (
@@ -207,32 +216,41 @@ export default function ManageBooking({
           href={booking.meetingUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="mt-4 inline-flex items-center gap-2 text-sm text-accent transition-colors hover:text-accent-bright"
+          className={styles.primary}
         >
           <Video size={16} strokeWidth={1.5} aria-hidden />
           Join the video call
         </a>
       ) : null}
 
-      <p className="mt-4 text-sm text-ink-mute">
+      <p className="mt-4 break-words text-sm text-ink-mute [overflow-wrap:anywhere]">
         Booked by {booking.name} ({booking.email})
       </p>
 
       {confirmingCancel ? (
-        <div className="mt-6 rounded-md border border-hairline p-4">
+        <div
+          className="mt-6 rounded-xl bg-paper p-4"
+          onKeyDown={(event) => {
+            if (event.key !== "Escape" || pending) return;
+            event.preventDefault();
+            setConfirmingCancel(false);
+            setError(null);
+            window.requestAnimationFrame(() => cancelButtonRef.current?.focus());
+          }}
+        >
           <p ref={cancelHeadingRef} tabIndex={-1} className="text-sm text-ink">
             Cancel this booking? This notifies everyone.
           </p>
-          <div className="mt-3 flex items-center gap-3">
+          <div className="mt-3 flex flex-wrap items-center gap-3">
             <button
               type="button"
               onClick={() => {
                 setConfirmingCancel(false);
                 setError(null);
-                window.requestAnimationFrame(() => rescheduleButtonRef.current?.focus());
+                window.requestAnimationFrame(() => cancelButtonRef.current?.focus());
               }}
               disabled={pending}
-              className={`${SUBTLE_BUTTON} text-ink`}
+              className={`${styles.secondary} text-ink`}
             >
               Keep it
             </button>
@@ -240,27 +258,30 @@ export default function ManageBooking({
               type="button"
               onClick={runCancel}
               disabled={pending}
-              className={`${SUBTLE_BUTTON} text-status-down`}
+              className={`${styles.secondary} text-status-down`}
             >
               {pending ? "Cancelling..." : "Yes, cancel"}
             </button>
           </div>
         </div>
       ) : (
-        <div className="mt-6 flex items-center gap-3">
+        <div className="mt-6 flex flex-wrap items-center gap-3">
+          {canReschedule ? (
+            <button
+              ref={rescheduleButtonRef}
+              type="button"
+              onClick={() => {
+                setRescheduling((open) => !open);
+                setError(null);
+              }}
+              disabled={pending}
+              className={`${styles.secondary} text-ink`}
+            >
+              {rescheduling ? "Keep current time" : "Reschedule"}
+            </button>
+          ) : null}
           <button
-            ref={rescheduleButtonRef}
-            type="button"
-            onClick={() => {
-              setRescheduling((open) => !open);
-              setError(null);
-            }}
-            disabled={pending}
-            className={`${SUBTLE_BUTTON} text-ink`}
-          >
-            {rescheduling ? "Keep current time" : "Reschedule"}
-          </button>
-          <button
+            ref={cancelButtonRef}
             type="button"
             onClick={() => {
               setConfirmingCancel(true);
@@ -269,7 +290,7 @@ export default function ManageBooking({
               window.requestAnimationFrame(() => cancelHeadingRef.current?.focus());
             }}
             disabled={pending}
-            className={`${SUBTLE_BUTTON} text-status-down`}
+            className={`${styles.secondary} text-status-down`}
           >
             Cancel booking
           </button>
@@ -277,19 +298,21 @@ export default function ManageBooking({
       )}
 
       {error ? (
-        <p role="alert" className="mt-3 text-sm text-ink-mute">
+        <p role="alert" className="mt-3 text-sm text-status-down">
           {error}
         </p>
       ) : null}
 
       {rescheduling && !confirmingCancel ? (
         <div className="mt-6 border-t border-hairline pt-6">
-          <p className="mb-4 text-sm text-ink-soft">Pick a new time</p>
+          <p className="mb-4 font-serif-display text-xl font-semibold tracking-tight text-ink">Pick a new time</p>
           <SlotPicker
             key={pickerKey}
             onSelect={handleSelect}
             selecting={pending}
             manageToken={booking.manageToken}
+            initialDate={initialDate}
+            meetingType={booking.meetingType}
             timezone={timezone}
             onTimezoneChange={setTimezone}
           />

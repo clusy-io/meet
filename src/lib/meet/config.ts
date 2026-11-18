@@ -43,6 +43,13 @@ export interface MeetConfig {
   members: Member[];
   /** Slot is shown when at least this many members are free. */
   quorum: number;
+  /** Optional fixed-date booking type with a required host and one partner. */
+  investor?: {
+    startDate: string;
+    endDate: string;
+    requiredMember: string;
+    partners: string[];
+  };
   /**
    * "Make my calendar look busy" for a personal page: how booked it should
    * look, or null/absent for off (lookBusy.ts). Set by configForPage from the
@@ -242,6 +249,30 @@ function membersEnv(mockMode: boolean): Member[] {
   return members;
 }
 
+function investorEnv(): MeetConfig["investor"] {
+  const startDate = process.env.MEET_INVESTOR_START_DATE?.trim();
+  const endDate = process.env.MEET_INVESTOR_END_DATE?.trim();
+  const requiredMember = process.env.MEET_INVESTOR_REQUIRED_MEMBER?.trim();
+  const partnersText = process.env.MEET_INVESTOR_PARTNERS?.trim();
+  if (!startDate && !endDate && !requiredMember && !partnersText) return undefined;
+  if (!startDate || !parseCivilDate(startDate) || !endDate || !parseCivilDate(endDate)) {
+    throw new Error("meet: MEET_INVESTOR_START_DATE and MEET_INVESTOR_END_DATE must be YYYY-MM-DD dates");
+  }
+  if (endDate < startDate) {
+    throw new Error("meet: MEET_INVESTOR_END_DATE cannot precede MEET_INVESTOR_START_DATE");
+  }
+  if (!requiredMember || requiredMember.includes(",")) {
+    throw new Error("meet: MEET_INVESTOR_REQUIRED_MEMBER must name one member");
+  }
+  const partners = [...new Set((partnersText ?? "").split(",").map((key) => key.trim()))];
+  if (partners.includes("") || partners.includes(requiredMember)) {
+    throw new Error("meet: MEET_INVESTOR_PARTNERS must name one or more members other than the required member");
+  }
+  // Members may be added by an admin after startup. Resolve these keys against
+  // the active roster when serving a booking page and when accepting a booking.
+  return { startDate, endDate, requiredMember, partners };
+}
+
 let cached: MeetConfig | null = null;
 
 export function getMeetConfig(): MeetConfig {
@@ -285,7 +316,7 @@ export function getMeetConfig(): MeetConfig {
   if (horizonDays < 0 || horizonDays > 366) {
     throw new Error("meet: MEET_HORIZON_DAYS must be between 0 and 366");
   }
-  const quorum = intEnv("MEET_QUORUM", Math.min(2, members.length));
+  const quorum = intEnv("MEET_QUORUM", 1);
   if (quorum < 1) {
     throw new Error("meet: MEET_QUORUM must be at least 1");
   }
@@ -302,6 +333,7 @@ export function getMeetConfig(): MeetConfig {
     horizonDays,
     members,
     quorum,
+    investor: investorEnv(),
     eventTitle: requiredProductionEnv("MEET_EVENT_TITLE", "Clusy <> {name}", mockMode),
     eventDescription: requiredProductionEnv(
       "MEET_EVENT_DESCRIPTION",

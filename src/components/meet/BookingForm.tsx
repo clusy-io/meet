@@ -7,18 +7,15 @@ import {
   type ReactElement,
   type SetStateAction,
 } from "react";
-import type { BookingView, CreateBookingRequest } from "@/lib/meet/types";
+import { ArrowRight } from "lucide-react";
+import styles from "./BookingDetails.module.css";
+import type { BookingView, CreateBookingRequest, MeetingType } from "@/lib/meet/types";
 
 /**
- * Details form for /meet. Owns the booking POST: 409 means the slot was
+ * Public booking details form. Owns the booking POST: 409 means the slot was
  * taken between render and submit (surfaced via onSlotTaken so the flow can
  * drop back to the picker); other failures show the server's message inline.
  */
-
-const INPUT_CLASS =
-  "w-full rounded-md border border-hairline bg-paper-raise px-3 py-2 text-sm text-ink placeholder:text-ink-faint transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60";
-
-const LABEL_CLASS = "mb-1.5 block text-sm font-medium text-ink-soft";
 
 function messageFrom(data: unknown): string | null {
   if (data && typeof data === "object" && "message" in data) {
@@ -39,6 +36,7 @@ function bookingFrom(data: unknown): BookingView | null {
 export function BookingForm({
   startIso,
   timezone,
+  meetingType,
   state,
   onDone,
   onSlotTaken,
@@ -46,6 +44,8 @@ export function BookingForm({
 }: {
   startIso: string;
   timezone: string;
+  /** Event type; the server resolves its length from the page and type. */
+  meetingType?: MeetingType;
   state: BookingFormState;
   onDone: (booking: BookingView) => void;
   onSlotTaken: () => void;
@@ -82,9 +82,10 @@ export function BookingForm({
       email: email.trim(),
       timezone,
     };
-    if (host) body.host = host;
     const trimmedNotes = notes.trim();
     if (trimmedNotes) body.notes = trimmedNotes;
+    if (meetingType) body.meetingType = meetingType;
+    if (host) body.host = host;
     if (guests.length > 0) body.guests = guests;
     if (websiteUrl) body.company = websiteUrl;
 
@@ -142,44 +143,49 @@ export function BookingForm({
   };
 
   return (
-    <form onSubmit={handleSubmit} aria-busy={pending} className="space-y-4">
-      <div>
-        <label htmlFor={nameId} className={LABEL_CLASS}>
-          Name
-        </label>
-        <input
-          id={nameId}
-          name="name"
-          type="text"
-          autoComplete="name"
-          data-meet-name-input
-          required
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder="Your name"
-          className={INPUT_CLASS}
-        />
+    <form onSubmit={handleSubmit} aria-busy={pending} className={`${styles.form} space-y-4`}>
+      <div className={styles.fields}>
+        <div>
+          <label htmlFor={nameId} className={styles.label}>
+            Name
+          </label>
+          <input
+            id={nameId}
+            name="name"
+            type="text"
+            autoComplete="name"
+            disabled={pending}
+            data-meet-name-input
+            required
+            maxLength={120}
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Your name"
+            className={styles.input}
+          />
+        </div>
+
+        <div>
+          <label htmlFor={emailId} className={styles.label}>
+            Email
+          </label>
+          <input
+            id={emailId}
+            name="email"
+            type="email"
+            autoComplete="email"
+            disabled={pending}
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@company.com"
+            className={styles.input}
+          />
+        </div>
       </div>
 
       <div>
-        <label htmlFor={emailId} className={LABEL_CLASS}>
-          Email
-        </label>
-        <input
-          id={emailId}
-          name="email"
-          type="email"
-          autoComplete="email"
-          required
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="you@company.com"
-          className={INPUT_CLASS}
-        />
-      </div>
-
-      <div>
-        <label htmlFor={guestsId} className={LABEL_CLASS}>
+        <label htmlFor={guestsId} className={styles.label}>
           Add guests <span className="font-normal text-ink-faint">(optional)</span>
         </label>
         {guests.length > 0 ? (
@@ -187,14 +193,15 @@ export function BookingForm({
             {guests.map((g) => (
               <li
                 key={g}
-                className="inline-flex items-center gap-1.5 rounded-full border border-hairline bg-paper px-2.5 py-1 text-xs text-ink"
+                className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-hairline bg-paper px-2.5 py-1 text-sm text-ink"
               >
-                {g}
+                <span className="min-w-0 break-all">{g}</span>
                 <button
                   type="button"
+                  disabled={pending}
                   aria-label={`Remove ${g}`}
                   onClick={() => setGuests(guests.filter((x) => x !== g))}
-                  className="rounded-full text-ink-mute transition-colors duration-100 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-ink-mute transition-colors duration-100 hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
                 >
                   &#215;
                 </button>
@@ -208,6 +215,9 @@ export function BookingForm({
           type="text"
           inputMode="email"
           autoComplete="off"
+          disabled={pending}
+          aria-invalid={!!guestError || undefined}
+          aria-describedby={guestError ? `${guestsId}-error` : `${guestsId}-hint`}
           value={guestInput}
           onChange={(e) => {
             setGuestInput(e.target.value);
@@ -223,29 +233,31 @@ export function BookingForm({
             }
           }}
           onBlur={() => addGuest(guestInput)}
-          placeholder="guest@company.com, press Enter to add"
-          className={INPUT_CLASS}
+          placeholder="guest@company.com"
+          className={styles.input}
         />
         {guestError ? (
-          <p role="alert" className="mt-1 text-xs text-status-warn">
+          <p id={`${guestsId}-error`} role="alert" className="mt-1 text-sm text-status-warn">
             {guestError}
           </p>
         ) : null}
-        <p className="mt-1 text-xs text-ink-faint">Guests receive the calendar invite.</p>
+        <p id={`${guestsId}-hint`} className="mt-1.5 text-xs leading-5 text-ink-mute">Press Enter to add a guest to the invite.</p>
       </div>
 
       <div>
-        <label htmlFor={notesId} className={LABEL_CLASS}>
+        <label htmlFor={notesId} className={styles.label}>
           Anything we should know? <span className="font-normal text-ink-faint">(optional)</span>
         </label>
         <textarea
           id={notesId}
           name="notes"
           rows={3}
+          disabled={pending}
+          maxLength={2000}
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           placeholder="Context, questions, or what you would like to cover"
-          className={`${INPUT_CLASS} resize-none`}
+          className={`${styles.input} resize-y`}
         />
       </div>
 
@@ -268,9 +280,10 @@ export function BookingForm({
       <button
         type="submit"
         disabled={pending}
-        className="w-full rounded-md bg-ink px-4 py-2 text-sm font-medium text-paper transition-opacity hover:opacity-90 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+        className={`${styles.primary} w-full`}
       >
         {pending ? "Booking..." : "Confirm booking"}
+        {!pending && <ArrowRight size={16} aria-hidden />}
       </button>
 
       {error ? (

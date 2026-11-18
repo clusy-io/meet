@@ -1,11 +1,12 @@
 import type { Metadata } from "next";
-import Image from "next/image";
-import Link from "next/link";
-import ThemeToggle from "@/components/ThemeToggle";
-import SiteFooter from "@/components/SiteFooter";
-import { AvailabilityPrime } from "@/components/meet/AvailabilityPrime";
-import MeetBooking from "@/components/meet/MeetBooking";
+import { ArrowRight, BriefcaseBusiness, MessageCircle, Users } from "lucide-react";
+import MeetShell from "@/components/meet/MeetShell";
+import styles from "@/components/meet/MeetShell.module.css";
+import { getMeetConfig } from "@/lib/meet/config";
+import { teamMeetingTypes } from "@/lib/meet/meetingTypes";
 import { SITE } from "@/meet.config";
+
+export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: SITE.bookingTitle,
@@ -24,32 +25,34 @@ export const metadata: Metadata = {
   },
 };
 
-export default function MeetPage() {
-  return (
-    <main className="flex min-h-screen flex-col bg-paper text-ink">
-      <AvailabilityPrime />
-      <header className="flex items-center justify-between px-5 py-4 sm:px-8">
-        <Link
-          href={SITE.homepage}
-          aria-label={`${SITE.name} home`}
-          className="inline-flex shrink-0 items-center rounded-md transition-opacity duration-150 hover:opacity-80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
-        >
-          <Image
-            src={SITE.logo}
-            alt={SITE.name}
-            width={112}
-            height={30}
-            className="h-7 w-auto dark:brightness-0 dark:invert"
-            priority
-          />
-        </Link>
-        <ThemeToggle />
-      </header>
+const icons = { chat: MessageCircle, meeting: Users, investor: BriefcaseBusiness };
 
-      <div className="flex flex-1 justify-center px-5 pb-16 pt-6 sm:px-8 sm:pt-10">
-        <MeetBooking />
-      </div>
-      <SiteFooter />
-    </main>
+export default function MeetPage() {
+  const options = teamMeetingTypes(getMeetConfig());
+  return (
+    <MeetShell>
+      <section className={styles.landing} aria-labelledby="meeting-picker-title">
+        <header className={styles.intro}>
+          <h1 id="meeting-picker-title" className={styles.title}>{SITE.bookingTitle}</h1>
+          <p className={styles.prompt}>Choose a meeting type.</p>
+        </header>
+        <ul className={styles.choices}>
+          {options.map(({ key, label, durationMinutes }) => {
+            const Icon = icons[key];
+            return (
+              <li key={key}>
+                {/* A document navigation lets the calendar start its availability request during HTML parsing. */}
+                <a href={`/book/${key}`} className={styles.choice}>
+                  <span className={styles.icon}><Icon size={20} strokeWidth={1.6} aria-hidden /></span>
+                  <span className={styles.name}>{label}</span>
+                  <span className={styles.duration}>{durationMinutes} min</span>
+                  <ArrowRight size={16} aria-hidden className={styles.arrow} />
+                </a>
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+    </MeetShell>
   );
 }

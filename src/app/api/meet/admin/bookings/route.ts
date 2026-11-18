@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/meet/admin";
 import { getHistoricalMeetConfig } from "@/lib/meet/members";
+import { investorWindow } from "@/lib/meet/meetingTypes";
 import { getMeetStore } from "@/lib/meet/store";
 
 export const runtime = "nodejs";
@@ -26,16 +27,24 @@ export async function GET(request: Request) {
 
   const config = await getHistoricalMeetConfig();
   const nowMs = Date.now();
-  const bookings = await getMeetStore().listBookingsStartingInRange(
-    nowMs - PAST_DAYS * DAY_MS,
-    nowMs + FUTURE_DAYS * DAY_MS
-  );
+  const store = getMeetStore();
+  const rangeEnd = nowMs + FUTURE_DAYS * DAY_MS;
+  const investor = investorWindow(config);
+  // Investors can book their configured dates before the ordinary agenda reaches them.
+  const [ordinaryWindow, investorWindowBookings] = await Promise.all([
+    store.listBookingsStartingInRange(nowMs - PAST_DAYS * DAY_MS, rangeEnd),
+    investor && investor.toMs > rangeEnd
+      ? store.listBookingsStartingInRange(Math.max(rangeEnd, investor.fromMs), investor.toMs)
+      : [],
+  ]);
+  const bookings = [...ordinaryWindow, ...investorWindowBookings];
 
   return NextResponse.json({
     hostTimezone: config.hostTimezone,
     members: config.members,
     bookings: bookings.map((b) => ({
       id: b.id,
+      meetingType: b.meetingType ?? null,
       startAt: b.startAt,
       endAt: b.endAt,
       durationMinutes: b.durationMinutes,

@@ -1,4 +1,19 @@
 import type { ReactElement } from "react";
+import type { MeetingType } from "@/lib/meet/types";
+
+interface AvailabilityQuery {
+  host?: string;
+  meetingType?: MeetingType;
+  manageToken?: string;
+}
+
+export function availabilityUrl({ host, meetingType, manageToken }: AvailabilityQuery): string {
+  const query = new URLSearchParams();
+  if (manageToken) query.set("token", manageToken);
+  if (host) query.set("host", host);
+  if (meetingType && !host && !manageToken) query.set("type", meetingType);
+  return query.size ? `/api/meet/availability?${query}` : "/api/meet/availability";
+}
 
 /**
  * Starts the availability request during HTML parsing, before hydration.
@@ -23,10 +38,8 @@ import type { ReactElement } from "react";
  * check fails and it simply falls back to fetching normally: the priming is an
  * optimisation, never a correctness dependency.
  */
-export function AvailabilityPrime({ host }: { host?: string }): ReactElement {
-  const url = host
-    ? `/api/meet/availability?host=${encodeURIComponent(host)}`
-    : "/api/meet/availability";
+export function AvailabilityPrime(props: Omit<AvailabilityQuery, "manageToken">): ReactElement {
+  const url = availabilityUrl(props);
 
   // The catch is mandatory, not defensive: without a handler attached in the
   // same tick, a rejection here is an unhandled promise rejection, which is a

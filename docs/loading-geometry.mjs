@@ -6,7 +6,7 @@
  * a stated goal that had quietly stopped being true.
  *
  *   MEET_MOCK_MODE=1 npm run dev
- *   node docs/loading-geometry.mjs http://localhost:3000
+ *   node docs/loading-geometry.mjs http://localhost:3000/book/meeting
  *
  * Needs playwright-core and a local Chrome build, taken ad hoc:
  *   npm i --no-save playwright-core && npx playwright install chromium
@@ -30,7 +30,7 @@ const isLocalOnlyNoise = (text, location) =>
   `${text} ${location?.url ?? ""}`.includes("_vercel/insights");
 
 
-const url = process.argv[2] ?? "http://localhost:3000";
+const url = process.argv[2] ?? "http://localhost:3000/book/meeting";
 const viewports = [
   { name: "desktop", width: 1500, height: 1000 },
   { name: "mobile", width: 390, height: 844 },

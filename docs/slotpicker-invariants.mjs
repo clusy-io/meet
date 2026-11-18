@@ -10,7 +10,7 @@
  * invariants are checked together. Treat them as one suite.
  *
  *   MEET_MOCK_MODE=1 npm run dev
- *   node docs/slotpicker-invariants.mjs http://localhost:3000
+ *   node docs/slotpicker-invariants.mjs http://localhost:3000/book/meeting
  *
  * Needs playwright-core and a local Chrome build; it is deliberately NOT a repo
  * dependency, since there is no CI to run it. Install ad hoc:
