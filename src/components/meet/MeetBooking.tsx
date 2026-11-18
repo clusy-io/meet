@@ -6,6 +6,7 @@ import { ArrowLeft, Check, Copy, Video } from "lucide-react";
 import { productCta } from "@/lib/meet/cta";
 import type { BookingView, MeetingType } from "@/lib/meet/types";
 import { BookingForm } from "@/components/meet/BookingForm";
+import { SelectedSlotSummary } from "@/components/meet/SelectedSlotSummary";
 import { SlotPicker } from "@/components/meet/SlotPicker";
 import styles from "./BookingDetails.module.css";
 import { SITE } from "@/meet.config";
@@ -254,15 +255,12 @@ export default function MeetBooking({
     );
   }
 
-  const formSlot = selectedStart ? (
+  const formSlot = selectedStart && selectedDuration !== null ? (
     <div>
       <h2 className="font-serif-display text-2xl text-ink">Your details</h2>
-      <p className="mt-1.5 text-sm leading-5 text-ink-mute">
-        <span className="hidden lg:inline">
-          {formatDay(selectedStart, timezone)}, {formatTime(selectedStart, timezone)} ·{" "}
-        </span>
-        {timezone.replaceAll("_", " ")} · {selectedDuration ?? "—"} minutes
-      </p>
+      <div className="mt-2 hidden lg:block">
+        <SelectedSlotSummary start={selectedStart} durationMinutes={selectedDuration} timezone={timezone} />
+      </div>
       <div className="mt-4 border-t border-hairline pt-4">
         <BookingForm
           startIso={selectedStart}
