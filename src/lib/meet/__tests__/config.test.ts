@@ -13,6 +13,7 @@ const ENV_NAMES = [
   "MEET_HORIZON_DAYS",
   "MEET_MEMBERS",
   "MEET_QUORUM",
+  "MEET_TEAMS_DOMAINS",
   "MEET_MOCK_MODE",
 ] as const;
 
@@ -47,6 +48,7 @@ describe("Meet config validation", () => {
   it("accepts and normalizes a valid single-member configuration", () => {
     const read = configured({
       NEXT_PUBLIC_SITE_URL: "https://example.com/",
+      MEET_TEAMS_DOMAINS: "OTHER.example, ,Office.Example ",
       MEET_MEMBERS: JSON.stringify([
         { key: "owner", name: " Owner ", email: " OWNER@Example.com " },
       ]),
@@ -58,6 +60,7 @@ describe("Meet config validation", () => {
       { key: "owner", name: "Owner", email: "owner@example.com" },
     ]);
     expect(config.quorum).toBe(1);
+    expect(config.teamsDomains).toEqual(["other.example", "office.example"]);
   });
 
   it.each([

@@ -34,7 +34,6 @@ export default function MeetPage() {
       <section className={styles.landing} aria-labelledby="meeting-picker-title">
         <header className={styles.intro}>
           <h1 id="meeting-picker-title" className={styles.title}>{SITE.bookingTitle}</h1>
-          <p className={styles.prompt}>Choose a meeting type.</p>
         </header>
         <ul className={styles.choices}>
           {options.map(({ key, label, durationMinutes }) => {

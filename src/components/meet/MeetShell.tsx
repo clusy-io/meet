@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import Image from "next/image";
 import Link from "next/link";
+import { ArrowLeft } from "lucide-react";
 import SiteFooter from "@/components/SiteFooter";
 import ThemeToggle from "@/components/ThemeToggle";
 import { SITE } from "@/meet.config";
@@ -10,10 +11,12 @@ export default function MeetShell({
   children,
   prime,
   homeHref = SITE.homepage,
+  calendar = false,
 }: {
   children: ReactNode;
   prime?: ReactNode;
   homeHref?: string;
+  calendar?: boolean;
 }) {
   return (
     <main className={styles.shell}>
@@ -29,9 +32,17 @@ export default function MeetShell({
             priority
           />
         </Link>
-        <ThemeToggle className="border border-hairline" />
+        <div className={styles.calendarNav}>
+          {calendar && (
+            <Link href="/" className={styles.calendarBack}>
+              <ArrowLeft size={15} aria-hidden />
+              Meeting types
+            </Link>
+          )}
+          <ThemeToggle className="border border-hairline" />
+        </div>
       </header>
-      {children}
+      {calendar ? <div className={styles.calendarContent}>{children}</div> : children}
       <SiteFooter />
     </main>
   );

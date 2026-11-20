@@ -692,7 +692,38 @@ describe("booking delivery and duration invariants", () => {
     });
   });
 
-  it("tries healthy organizer accounts in preference order", async () => {
+  it.each([
+    [undefined, "google"],
+    ["meet", "google"],
+    ["teams", "microsoft"],
+  ] as const)("chooses the organizer for video preference %s", async (video, provider) => {
+    mocks.listAccounts.mockResolvedValue([
+      account("ms", "one", "microsoft", "one@example.com"),
+      account("g", "two", "google", "two@example.com"),
+    ]);
+    mocks.microsoftCreate.mockResolvedValue({ eventId: "teams", meetingUrl: "https://teams.microsoft.com/join" });
+    mocks.googleCreate.mockResolvedValue({ eventId: "meet", meetingUrl: "https://meet.google.com/join" });
+    const result = await createBooking({
+      video, start: new Date(START_MS).toISOString(),
+      name: "Booker", email: "booker@example.com", timezone: "UTC",
+    });
+    expect(result).toMatchObject({ ok: true, booking: { eventRefs: [{ provider }], syncStatus: "synced" } });
+    expect((provider === "google" ? mocks.googleCreate : mocks.microsoftCreate).mock.calls[0][1].withConference).toBe(true);
+    expect(provider === "google" ? mocks.microsoftCreate : mocks.googleCreate).not.toHaveBeenCalled();
+  });
+
+  it("uses Teams for a Microsoft-only host even when a client omits its preference", async () => {
+    mocks.listAccounts.mockResolvedValue([account("ms", "one", "microsoft", "one@example.com")]);
+    mocks.microsoftCreate.mockResolvedValue({ eventId: "teams", meetingUrl: "https://teams.microsoft.com/join" });
+    const result = await createBooking({
+      start: new Date(START_MS).toISOString(),
+      name: "Booker", email: "booker@example.com", timezone: "UTC",
+    });
+    expect(result).toMatchObject({ ok: true, booking: { meetingUrl: "https://teams.microsoft.com/join" } });
+    expect(mocks.microsoftCreate.mock.calls[0][1].withConference).toBe(true);
+  });
+
+  it("falls back to Meet if the requested Teams organizer fails", async () => {
     mocks.listAccounts.mockResolvedValue([
       account("company-ms", "one", "microsoft", "one@example.com"),
       account("google", "one", "google", "one@gmail.com"),
@@ -705,6 +736,7 @@ describe("booking delivery and duration invariants", () => {
     });
 
     const result = await createBooking({
+      video: "teams",
       start: new Date(START_MS).toISOString(),
       name: "Booker",
       email: "booker@example.com",
@@ -737,6 +769,7 @@ describe("booking delivery and duration invariants", () => {
     });
 
     const result = await createBooking({
+      video: "teams",
       start: new Date(START_MS).toISOString(),
       name: "Booker",
       email: "booker@example.com",

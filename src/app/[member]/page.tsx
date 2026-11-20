@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import MeetShell from "@/components/meet/MeetShell";
 import { AvailabilityPrime } from "@/components/meet/AvailabilityPrime";
 import MeetBooking from "@/components/meet/MeetBooking";
+import { availableVideoProviders } from "@/lib/meet/videoProviders";
 import { getPage } from "@/lib/meet/pages";
 
 /**
@@ -51,15 +52,16 @@ export default async function MemberBookingPage({ params }: RouteParams) {
   // admin console is where its existence is still visible.
   if (!page || !page.enabled) notFound();
 
+  const videoProviders = await availableVideoProviders({ host: page.member.key });
   return (
-    <MeetShell prime={<AvailabilityPrime host={page.member.key} />}>
-      <div className="flex flex-1 justify-center px-5 pb-16 pt-6 sm:px-8 sm:pt-10">
-        <MeetBooking
-          host={page.member.key}
-          headline={`Book a call with ${page.headline}`}
-          blurb={page.blurb}
-        />
-      </div>
+    <MeetShell calendar prime={<AvailabilityPrime host={page.member.key} />}>
+      <MeetBooking
+        host={page.member.key}
+        headline={`Book a call with ${page.headline}`}
+        blurb={page.blurb}
+        durationMinutes={page.config.durationMinutes}
+        videoProviders={videoProviders}
+      />
     </MeetShell>
   );
 }

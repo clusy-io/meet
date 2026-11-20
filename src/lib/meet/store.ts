@@ -25,6 +25,8 @@ export type MemberWriteResult =
   | { ok: true; member: MemberRecord }
   | { ok: false; reason: "key_taken" | "email_taken" };
 
+type VideoAccount = Pick<CalendarAccount, "provider" | "email">;
+
 export interface MeetStore {
   /** Runtime roster rows layered over the MEET_MEMBERS baseline. */
   listMemberRecords(): Promise<MemberRecord[]>;
@@ -53,6 +55,7 @@ export interface MeetStore {
   restoreMemberArchivedAt(memberKey: string, expectedArchivedAt: string): Promise<boolean>;
 
   listAccounts(): Promise<CalendarAccount[]>;
+  listConnectedVideoAccounts(memberKeys: string[]): Promise<VideoAccount[]>;
   getAccount(id: string): Promise<CalendarAccount | null>;
   /** Insert, or replace the row for the same (memberKey, provider, email). */
   upsertAccount(
@@ -556,6 +559,16 @@ class SupabaseMeetStore implements MeetStore {
     return (data as AccountRow[]).map(accountFromRow);
   }
 
+  async listConnectedVideoAccounts(memberKeys: string[]): Promise<VideoAccount[]> {
+    if (memberKeys.length === 0) return [];
+    const { data, error } = await this.client.from("meet_accounts")
+      .select("provider,email")
+      .eq("status", "ok")
+      .in("member_key", memberKeys);
+    if (error) throw new Error(`meet_accounts video lookup failed: ${error.message}`);
+    return (data ?? []) as VideoAccount[];
+  }
+
   async getAccount(id: string): Promise<CalendarAccount | null> {
     const { data, error } = await this.client
       .from("meet_accounts")
@@ -947,6 +960,12 @@ export class MemoryMeetStore implements MeetStore {
 
   async listAccounts(): Promise<CalendarAccount[]> {
     return [...this.accounts];
+  }
+
+  async listConnectedVideoAccounts(memberKeys: string[]): Promise<VideoAccount[]> {
+    return this.accounts
+      .filter((account) => memberKeys.includes(account.memberKey) && account.status === "ok")
+      .map(({ provider, email }) => ({ provider, email }));
   }
 
   async getAccount(id: string): Promise<CalendarAccount | null> {

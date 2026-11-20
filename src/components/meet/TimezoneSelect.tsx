@@ -79,10 +79,14 @@ export function TimezoneSelect({
   value,
   slotIso,
   onChange,
+  disabled = false,
+  placement = "above",
 }: {
   value: string;
   slotIso: string | null;
   onChange: (timezone: string) => void;
+  disabled?: boolean;
+  placement?: "above" | "below";
 }): ReactElement {
   const zones = useMemo(() => {
     const supported =
@@ -102,6 +106,10 @@ export function TimezoneSelect({
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const slotDate = useMemo(() => slotIso ? new Date(slotIso) : null, [slotIso]);
+  const zoneLabel = displayLabel(value, slotDate);
+  const triggerLabel = placement === "below" && !value.startsWith("Etc/")
+    ? zoneLabel.slice(zoneLabel.lastIndexOf("/") + 1)
+    : zoneLabel;
   const options = useMemo(() => {
     if (!open) return [];
     // Before choosing a date, keep offset search usable without presenting
@@ -125,14 +133,18 @@ export function TimezoneSelect({
   useEffect(() => {
     if (!open) return;
     inputRef.current?.focus();
-    const onDown = (e: MouseEvent) => {
+    const onDown = (e: PointerEvent | FocusEvent) => {
       if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
         setOpen(false);
         setQuery("");
       }
     };
-    document.addEventListener("mousedown", onDown);
-    return () => document.removeEventListener("mousedown", onDown);
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("focusin", onDown);
+    return () => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("focusin", onDown);
+    };
   }, [open]);
 
   // Keep the highlighted row in view while arrowing through the list.
@@ -150,12 +162,16 @@ export function TimezoneSelect({
   };
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className={placement === "below" ? "sm:relative" : "relative"}>
       {/* A quiet text trigger, not a form field: the timezone is secondary
           chrome and should read like a caption until it is needed. */}
       <button
         id={triggerId}
         type="button"
+        disabled={disabled}
+        title={zoneLabel}
+        aria-label={`Time zone, ${zoneLabel}`}
+        aria-controls={open ? listboxId : undefined}
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => {
@@ -163,19 +179,21 @@ export function TimezoneSelect({
           setQuery("");
           setHighlight(0);
         }}
-        className="inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 py-1 text-sm text-ink-mute transition-colors duration-150 hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+        className={`${styles.zoneTrigger} inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-lg px-2 py-1 text-sm transition-colors duration-150 hover:text-ink disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60`}
       >
-        <Globe className="h-3.5 w-3.5" strokeWidth={1.5} aria-hidden />
-        {displayLabel(value, slotDate)}
+        <Globe className="h-3.5 w-3.5 shrink-0 text-accent" strokeWidth={1.5} aria-hidden />
+        <span className="min-w-0 truncate">{triggerLabel}</span>
         <ChevronDown
-          className={`h-3 w-3 transition-transform duration-150 ${open ? "rotate-180" : ""}`}
+          className={`h-3 w-3 shrink-0 transition-transform duration-150 motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
           strokeWidth={1.5}
           aria-hidden
         />
       </button>
 
       {open ? (
-        <div className={`${styles.panel} absolute bottom-full left-1/2 z-20 mb-2 w-72 max-w-[calc(100vw-3rem)] -translate-x-1/2 overflow-hidden`}>
+        <div className={`${styles.zoneMenu} absolute z-20 w-80 max-w-[calc(100vw-40px)] overflow-hidden ${placement === "below"
+          ? "top-full left-0 mt-2 sm:right-0 sm:left-auto"
+          : "bottom-full left-1/2 mb-2 -translate-x-1/2"}`}>
           <input
             ref={inputRef}
             type="text"
@@ -228,17 +246,14 @@ export function TimezoneSelect({
                   key={zone}
                   id={`${listboxId}-option-${i}`}
                   data-index={i}
+                  data-highlighted={i === highlight ? "" : undefined}
                   role="option"
                   aria-selected={zone === value}
                   onMouseDown={(event) => event.preventDefault()}
                   onMouseEnter={() => setHighlight(i)}
                   onClick={() => pick(zone)}
-                  className={`cursor-pointer px-3 py-1.5 text-left text-sm transition-colors duration-100 ${
-                    i === highlight
-                      ? "bg-ink text-paper"
-                      : zone === value
-                        ? "font-medium text-ink"
-                        : "text-ink-soft"
+                  className={`flex min-h-11 cursor-pointer items-center px-3 py-1.5 text-left text-sm transition-colors duration-100 ${
+                    zone === value ? "font-medium text-ink" : "text-ink-soft"
                   }`}
                 >
                   {label}

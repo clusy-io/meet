@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { createBooking, toBookingView } from "@/lib/meet/bookings";
 import { listEffectiveMembers } from "@/lib/meet/members";
-import { MEETING_TYPES } from "@/lib/meet/types";
+import { MEETING_TYPES, VIDEO_CHOICES } from "@/lib/meet/types";
 import { rateLimit } from "@/lib/meet/ratelimit";
 import { hasTrustedMutationOrigin } from "@/lib/meet/requestSecurity";
 
@@ -11,6 +11,7 @@ export const dynamic = "force-dynamic";
 
 const bodySchema = z.object({
   meetingType: z.enum(MEETING_TYPES).optional(),
+  video: z.enum(VIDEO_CHOICES).optional(),
   start: z.string().min(1, "A start time is required."),
   // Must be declared: z.object() strips unknown keys, so an undeclared `host`
   // would be dropped in silence and every personal booking would be filed as

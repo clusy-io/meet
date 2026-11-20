@@ -1,8 +1,378 @@
-.panel {
+.panel,
+.zoneMenu {
   border: 1px solid var(--hairline);
-  border-radius: 1rem;
+  border-radius: 16px;
   background: var(--paper-raise);
   box-shadow: 0 2px 5px hsl(var(--ink) / 0.03), 0 10px 32px -20px hsl(var(--ink) / 0.22);
+}
+
+.panelHeading {
+  border-bottom: 1px solid var(--hairline);
+  padding-bottom: 0.5rem;
+}
+
+.timesHeading {
+  line-height: 1.5;
+}
+
+.monthArrow {
+  display: grid;
+  width: 2.75rem;
+  height: 2.75rem;
+  place-content: center;
+  border-radius: 50%;
+  background: radial-gradient(circle, hsl(var(--ink) / 0.035) 48%, transparent 50%);
+  color: hsl(var(--ink-soft));
+}
+
+.monthArrow:disabled {
+  opacity: 0.44;
+}
+
+.weekday {
+  padding-block: 0.125rem 0.5rem;
+  color: hsl(var(--ink-mute));
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.035em;
+  text-align: center;
+}
+
+.bookableDay {
+  color: hsl(var(--ink));
+  font-weight: 500;
+}
+
+.chosenDay,
+.timeOption[aria-pressed="true"] {
+  color: var(--paper);
+}
+
+.chosenDay { font-weight: 600; }
+
+.selection {
+  background: hsl(var(--ink));
+}
+
+.timeOption {
+  color: hsl(var(--ink-soft));
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.wideTime {
+  border-radius: 0.625rem;
+  border: 1px solid var(--hairline);
+}
+
+.zoneTrigger {
+  color: hsl(var(--ink-soft));
+}
+
+.zoneMenu {
+  box-shadow: 0 8px 28px hsl(var(--ink) / 0.13);
+}
+
+.zoneMenu [role="listbox"] {
+  padding: 0.25rem;
+}
+
+.zoneMenu [role="option"] {
+  border-radius: 0.5rem;
+}
+
+.zoneMenu [data-highlighted] {
+  background: hsl(var(--accent) / 0.1);
+  color: hsl(var(--ink));
+}
+
+@media (hover: hover) {
+  .monthArrow:enabled:hover {
+    color: hsl(var(--accent));
+    background: radial-gradient(circle, hsl(var(--accent) / 0.1) 48%, transparent 50%);
+  }
+
+  .bookableDay:enabled:hover,
+  .timeOption:enabled:hover {
+    background-color: hsl(var(--ink) / 0.045);
+  }
+
+  .zoneTrigger:enabled:hover {
+    background-color: hsl(var(--accent) / 0.1);
+    color: hsl(var(--ink));
+  }
+
+  .wideTime:enabled:hover {
+    border-color: var(--hairline-strong);
+  }
+}
+
+@media (forced-colors: active) {
+  .selection {
+    border: 2px solid Highlight;
+  }
+}
+
+/* Public booking opens one calendar, widens to include the day's times, then
+   shows the guest's details in a single centered surface. */
+.standalone {
+  width: min(100%, 37rem);
+  margin-inline: auto;
+}
+
+.toolbarTimezone {
+  min-width: 0;
+  max-width: min(100%, 21rem);
+  min-height: 2.75rem;
+}
+
+.toolbarTimezone:empty { width: min(100%, 13rem); }
+
+.toolbarTimezone .zoneTrigger {
+  padding-inline: 0.375rem;
+  border-radius: 0.5rem;
+}
+
+.standalone .panel,
+.phaseSurface {
+  min-width: 0;
+  border-radius: 1.125rem;
+  box-shadow: 0 3px 12px -8px hsl(var(--ink) / 0.16);
+}
+
+.phaseSurface {
+  width: 100%;
+  max-width: 37rem;
+  margin-inline: auto;
+  overflow: clip;
+  border: 1px solid var(--hairline);
+  background: var(--paper-raise);
+}
+
+.calendarPane,
+.timeRail,
+.detailsCard {
+  min-width: 0;
+}
+
+.appointmentBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.detailsCard > .appointmentBar {
+  border-bottom: 1px solid var(--hairline);
+  padding: 0.875rem clamp(1rem, 4vw, 1.5rem);
+}
+
+.formBody {
+  padding: 1.25rem clamp(1rem, 4vw, 1.5rem);
+}
+
+.changeDate,
+.changeTime {
+  flex-shrink: 0;
+  min-height: 2.75rem;
+  padding-inline: 0.5rem;
+  border-radius: 0.5rem;
+  color: hsl(var(--accent));
+  font-size: 0.875rem;
+  font-weight: 550;
+}
+
+.changeDate:focus-visible,
+.changeTime:focus-visible {
+  outline: 2px solid hsl(var(--accent));
+  outline-offset: 2px;
+}
+
+.changeDate:disabled,
+.changeTime:disabled { opacity: 0.55; }
+
+.timeRailContent {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: clamp(1rem, 2vw, 1.5rem);
+}
+
+.timeRailContent > .scrollList {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  padding: 0.1875rem;
+  max-height: none;
+  overflow: visible;
+}
+
+@media (min-width: 22.5rem) {
+  .timeRailContent > .scrollList {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (width < 22.5rem) {
+  .appointmentBar { gap: 0.375rem; }
+  .detailsCard > .appointmentBar { padding-inline: 0.75rem; }
+  .changeDate, .changeTime { padding-inline: 0.125rem; }
+}
+
+.standalone [data-meet-calendar] {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: clamp(1rem, 2vw, 1.625rem);
+}
+
+.standalone .monthHeading {
+  position: relative;
+  display: grid;
+  grid-template-columns: 2.75rem minmax(0, 1fr) 2.75rem;
+  align-items: center;
+  padding-bottom: 0.625rem;
+  margin-bottom: 0.875rem;
+}
+
+.standalone .monthHeading > p {
+  grid-area: 1 / 2;
+  text-align: center;
+  letter-spacing: -0.025em;
+}
+
+.standalone .monthHeading > div { display: contents; }
+.standalone .monthArrow:first-child { grid-area: 1 / 1; }
+.standalone .monthArrow:last-child { grid-area: 1 / 3; }
+
+.standalone .weekday {
+  padding-block: 0.2rem 0.55rem;
+  font-size: 0.75rem;
+}
+
+.standalone .dayCell {
+  width: 100%;
+  height: clamp(2.75rem, 4.25vw, 3.875rem);
+  aspect-ratio: auto;
+  border-radius: 0.75rem;
+  font-size: 0.9375rem;
+}
+
+.standalone .bookableDay { font-weight: 600; }
+.standalone .unavailableDay { color: color-mix(in srgb, hsl(var(--ink-faint)) 73%, var(--paper-raise)); }
+.standalone .dayCell[aria-hidden="true"] { color: color-mix(in srgb, hsl(var(--ink-faint)) 46%, var(--paper-raise)); }
+
+.standalone .dayCell :global(.meet-dot),
+.standalone .dayCell :global(.meet-halo) {
+  top: calc(50% + 0.75rem);
+  bottom: auto;
+}
+
+/* The 20px loading halo shares the center of its 4px availability dot. */
+.standalone .dayCell :global(.meet-halo) { margin-top: -8px; }
+
+.standalone .chosenDay,
+.standalone .timeOption[aria-pressed="true"] {
+  color: hsl(var(--accent));
+  font-weight: 650;
+}
+
+.standalone .chosenDay .selection,
+.standalone .timeOption[aria-pressed="true"] {
+  border: 1px solid hsl(var(--accent) / 0.35);
+  background: color-mix(in srgb, hsl(var(--accent)) 8%, var(--paper-raise));
+}
+
+.standalone .timeOption {
+  min-height: 2.875rem;
+  border: 1px solid var(--hairline);
+  border-radius: 0.625rem;
+  font-weight: 550;
+}
+
+@media (hover: hover) {
+  .standalone .bookableDay:enabled:hover,
+  .standalone .timeOption:enabled:hover,
+  .changeDate:enabled:hover,
+  .changeTime:enabled:hover {
+    background-color: hsl(var(--accent) / 0.065);
+  }
+}
+
+@media (width < 64rem) {
+  .standalone[data-stage="time"] .calendarPane { display: none; }
+  .timeRail .timeOption { padding-inline: 0.375rem; }
+}
+
+@media (min-width: 64rem) {
+  .standalone[data-stage] { width: min(100%, 52rem); }
+  .standalone > header { max-width: 37rem; margin-inline: auto; }
+  .standalone[data-stage="time"] .phaseSurface { max-width: 52rem; }
+
+  .bookingGrid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0fr);
+  }
+
+  .standalone[data-stage="time"] .bookingGrid {
+    grid-template-columns: minmax(0, 1.75fr) minmax(0, 1fr);
+  }
+
+  .timeRail {
+    position: relative;
+    overflow: clip;
+    border-inline-start: 1px solid var(--hairline);
+  }
+
+  .timeRailContent {
+    position: absolute;
+    inset: 0;
+    /* Keep labels on their final lines while the second grid track opens. */
+    min-width: 16rem;
+  }
+
+  .timeRailContent > .scrollList {
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0.375rem;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+  }
+
+  .changeDate { display: none; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .standalone[data-direction="forward"] { --step-offset: 0.5rem; }
+  .standalone[data-direction="back"] { --step-offset: -0.5rem; }
+
+  .standalone[data-direction] .timeRailContent,
+  .standalone[data-direction] .detailsCard {
+    animation: step-in 180ms ease-out;
+  }
+
+  @media (width < 64rem) {
+    .standalone[data-direction="back"][data-stage="date"] .calendarPane {
+      animation: step-in 180ms ease-out;
+    }
+  }
+
+  @media (min-width: 64rem) {
+    .phaseSurface { transition: max-width 260ms var(--ease-out-expo); }
+    .bookingGrid { transition: grid-template-columns 260ms var(--ease-out-expo); }
+  }
+}
+
+@keyframes step-in {
+  from { opacity: 0; transform: translateX(var(--step-offset, 0)); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@media (max-width: 39.99rem) {
+  .standalone [data-meet-calendar] { padding-inline: 0.625rem; }
+  .standalone .calendarGrid { column-gap: 2px; }
+  .standalone .dayCell { height: clamp(2.75rem, 12vw, 3.25rem); }
+  .standalone .monthHeading { margin-bottom: 0.625rem; }
 }
 
 .scrollList {

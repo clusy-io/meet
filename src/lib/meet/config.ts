@@ -64,6 +64,8 @@ export interface MeetConfig {
   brandName: string;
   /** Absolute origin for links in emails, e.g. https://meet.example.com */
   siteOrigin: string;
+  /** Additional work mailbox domains eligible to host Teams conferences. */
+  teamsDomains?: string[];
   /** Resend "from" for booking emails. */
   emailFrom: string;
   /** Bearer credential accepted only by the reminder endpoint. */
@@ -342,6 +344,8 @@ export function getMeetConfig(): MeetConfig {
     ),
     brandName: requiredProductionEnv("MEET_BRAND_NAME", "Clusy", mockMode),
     siteOrigin: siteOriginEnv(mockMode),
+    teamsDomains: (process.env.MEET_TEAMS_DOMAINS ?? "")
+      .split(",").map((domain) => domain.trim().toLowerCase()).filter(Boolean),
     emailFrom: emailFromEnv(mockMode),
     cronSecret: secretEnv("CRON_SECRET", 24, mockMode),
     adminSecret: secretEnv("MEET_ADMIN_SECRET", 24, mockMode),

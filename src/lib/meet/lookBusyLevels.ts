@@ -34,23 +34,23 @@ export const LOOK_BUSY_LEVEL_INFO: Record<LookBusyLevel, LookBusyLevelInfo> = {
   light: {
     key: "light",
     label: "Light",
-    detail: "A few times taken, mostly this week",
-    near: 0.4,
-    far: 0.15,
+    detail: "About half taken today, a third several weeks out",
+    near: 0.55,
+    far: 0.30,
   },
   balanced: {
     key: "balanced",
     label: "Balanced",
-    detail: "About half of this week taken, thinning out later",
-    near: 0.55,
-    far: 0.25,
+    detail: "About three quarters taken today, half several weeks out",
+    near: 0.75,
+    far: 0.50,
   },
   packed: {
     key: "packed",
     label: "Packed",
-    detail: "Most of this week taken, still room further out",
-    near: 0.7,
-    far: 0.4,
+    detail: "Almost full today, about two thirds taken several weeks out",
+    near: 0.90,
+    far: 0.65,
   },
 };
 
@@ -85,5 +85,5 @@ export function lookBusyShare(level: LookBusyLevel, daysAhead: number, wobble: n
   const { near, far } = LOOK_BUSY_LEVEL_INFO[level];
   const eased = far + (near - far) * Math.exp(-Math.max(0, daysAhead) / LOOK_BUSY_EASE_DAYS);
   const share = eased + (wobble * 2 - 1) * LOOK_BUSY_DAY_WOBBLE;
-  return Math.min(0.85, Math.max(0.05, share));
+  return Math.min(0.95, Math.max(0.05, share));
 }
