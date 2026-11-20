@@ -2,16 +2,19 @@
 
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   useSyncExternalStore,
   type CSSProperties,
+  type MouseEvent,
+  type PointerEvent,
   type ReactElement,
   type ReactNode,
 } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight } from "lucide-react";
 import {
   addCivilDays,
   civilDayNumber,
@@ -22,26 +25,13 @@ import {
 import type { AvailabilityResponse, MeetingType } from "@/lib/meet/types";
 import { availabilityUrl } from "./AvailabilityPrime";
 import styles from "./SlotPicker.module.css";
-import { SelectedSlotSummary } from "@/components/meet/SelectedSlotSummary";
+import { AppointmentSummary, SelectedSlotSummary } from "@/components/meet/SelectedSlotSummary";
 import { TimezoneSelect } from "@/components/meet/TimezoneSelect";
 
 /**
- * Slot picker for the public booking page: one animated composition in up to three stages.
- *
- *   1. A month calendar, centered.
- *   2. Pick a date: the calendar slides to the left column, the day's times
- *      expand beside it.
- *   3. (only when the parent passes `formSlot`) Pick a time: the times
- *      compress into a slim middle column, calendar and chosen date stay in
- *      view, and the guest form opens on the right.
- *
- * Animation rules learned the hard way: panel movement is explicit and the
- * opening calendar renders at its real CSS size. Framer layout projection and
- * authored scale transforms must not share an element; a background timer can
- * otherwise replay a stale translation after the page has settled.
- *
- * Phones swap stages in place instead: calendar, then times behind a date
- * summary bar, then the form behind a date-plus-time summary bar.
+ * Public bookings keep one surface across the calendar, times, and guest form.
+ * On wider screens the times open beside the month. The manage view uses
+ * the compact picker below.
  *
  * Availability is fetched once per mount; the server's minimum-notice window
  * is re-applied against a live clock so slots age out without a refetch.
@@ -79,7 +69,7 @@ const CALENDAR_DAY_FMT = new Intl.DateTimeFormat("en-US", {
   day: "numeric",
 });
 
-function focusWhenVisible(selector: string, attempts = 0): void {
+function focusWhenVisible(selector: string, reveal = false, attempts = 0): void {
   const target = [...document.querySelectorAll<HTMLElement>(selector)].find(
     // Generating boxes is not enough to be the LIVE copy. It correctly rejects
     // the display:none responsive twin, but an exiting popLayout child also
@@ -95,10 +85,11 @@ function focusWhenVisible(selector: string, attempts = 0): void {
     // measured one frame into the entrance spring, so it lands short of where
     // the panel settles and nothing closes the gap.
     target.focus({ preventScroll: true });
+    if (reveal) target.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
     return;
   }
   if (attempts < 60) {
-    window.requestAnimationFrame(() => focusWhenVisible(selector, attempts + 1));
+    window.requestAnimationFrame(() => focusWhenVisible(selector, reveal, attempts + 1));
   }
 }
 
@@ -167,7 +158,8 @@ function buildMonth(
 }
 
 export function SlotPicker(props: {
-  onSelect: (startIso: string, timezone: string, durationMinutes: number) => void;
+  renderEventHeader?: (timezoneSelector: ReactNode) => ReactNode;
+  onSelect: (startIso: string, timezone: string, durationMinutes: number, touchEntry?: boolean) => void;
   selecting?: boolean;
   manageToken?: string;
   timezone?: string;
@@ -186,6 +178,7 @@ export function SlotPicker(props: {
 }): ReactElement {
   const {
     onSelect,
+    renderEventHeader,
     selecting = false,
     manageToken,
     timezone: timezoneProp,
@@ -197,6 +190,7 @@ export function SlotPicker(props: {
     meetingType,
     initialDate,
   } = props;
+  const standalone = renderEventHeader !== undefined;
 
   const [attempt, setAttempt] = useState(0);
   const url = availabilityUrl({ host, manageToken, meetingType });
@@ -211,8 +205,13 @@ export function SlotPicker(props: {
   const timezone = timezoneProp ?? internalTimezone;
   const handleTimezoneChange = onTimezoneChange ?? setInternalTimezone;
   const [pickedDay, setPickedDay] = useState<string | null>(null);
+  const [previousSlot, setPreviousSlot] = useState<string | null>(null);
   const [monthKey, setMonthKey] = useState<string | null>(null);
   const [navDir, setNavDir] = useState(1);
+  const [direction, setDirection] = useState<"forward" | "back">();
+  const timePointer = useRef<string | null>(null);
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const previousHeight = useRef<number | null>(null);
   const reducedMotion = useReducedMotion() ?? false;
 
   // Live clock used to retire a slot at the exact minimum-notice boundary.
@@ -442,6 +441,31 @@ export function SlotPicker(props: {
   );
   const month = months[monthIndex] ?? null;
 
+  // `selectedDay`, not `selectedSlot`: selectedDay is null once the chosen
+  // instant is no longer among the live slots, which is what happens when the
+  // min-notice clock retires it mid-form. Closing the form then drops the
+  // visitor back to that day's remaining times — their day and their place are
+  // kept — instead of leaving a form open on a time the server would refuse.
+  const formOpen = selectedDay !== null && formSlot !== null && activeDay !== null;
+  const expanded = activeDay !== null;
+  const stage = formOpen ? "details" : expanded ? "time" : "date";
+
+  // Measure only a deliberate step change. Typing, availability updates and
+  // resizing should always use the natural height of the content.
+  useLayoutEffect(() => {
+    const surface = surfaceRef.current;
+    const from = previousHeight.current;
+    previousHeight.current = null;
+    if (!surface || from === null || reducedMotion) return;
+    const to = surface.getBoundingClientRect().height;
+    if (Math.abs(to - from) < 1) return;
+    const animation = surface.animate(
+      [{ height: `${from}px` }, { height: `${to}px` }],
+      { duration: 240, easing: "cubic-bezier(0.2, 0.75, 0.25, 1)" }
+    );
+    return () => animation.cancel();
+  }, [stage, reducedMotion]);
+
   const timeFmt = useMemo(
     () =>
       new Intl.DateTimeFormat("en-US", {
@@ -472,31 +496,42 @@ export function SlotPicker(props: {
     [timezone]
   );
 
-  if (notFound) {
-    return (
-      <div className={`${styles.panel} p-4 sm:p-5`}>
-        <p className="text-sm text-ink-mute">
-          {manageToken ? "This booking can no longer be rescheduled." : "This booking page is no longer available."}
-        </p>
-      </div>
-    );
-  }
+  const timezoneControl = hydrated ? (
+    <TimezoneSelect
+      value={timezone}
+      slotIso={selectedDay ? selectedSlot : activeSlots[0] ?? (standalone ? new Date(nowMs).toISOString() : null)}
+      onChange={handleTimezoneChange}
+      disabled={selecting}
+      placement={standalone ? "below" : undefined}
+    />
+  ) : null;
+  const eventHeader = renderEventHeader?.(
+    <div className={styles.toolbarTimezone}>{timezoneControl}</div>
+  );
 
   // No loading branch: the calendar below renders from the first frame and
   // fills in. Replacing a skeleton subtree with the real one is what used to
   // move the card 19px (a missing weekday header), resize it 31px between five
   // and six row months, and shift every cell 8px on mobile (p-5 against p-4).
-  if (failed) {
+  if (failed || notFound) {
+    const message = notFound
+      ? manageToken ? "This booking can no longer be rescheduled." : "This booking page is no longer available."
+      : "Could not load available times.";
     return (
-      <div className={`${styles.panel} p-4 sm:p-5`}>
-        <p className="text-sm text-ink-mute">Could not load available times.</p>
-        <button
-          type="button"
-          onClick={() => setAttempt((a) => a + 1)}
-          className={`mt-3 rounded-md border border-hairline px-3 py-1.5 text-sm font-medium text-ink transition-colors duration-150 hover:border-hairline-strong ${FOCUS_RING}`}
-        >
-          Try again
-        </button>
+      <div className={standalone ? styles.standalone : undefined}>
+        {eventHeader}
+        <div className={`${styles.panel} p-4 sm:p-5`}>
+          <p className="text-sm text-ink-mute">{message}</p>
+          {failed && (
+            <button
+              type="button"
+              onClick={() => setAttempt((a) => a + 1)}
+              className={`mt-3 rounded-md border border-hairline px-3 py-1.5 text-sm font-medium text-ink transition-colors duration-150 hover:border-hairline-strong ${FOCUS_RING}`}
+            >
+              Try again
+            </button>
+          )}
+        </div>
       </div>
     );
   }
@@ -531,23 +566,59 @@ export function SlotPicker(props: {
       ? "No times available right now."
       : "";
 
-  // `selectedDay`, not `selectedSlot`: selectedDay is null once the chosen
-  // instant is no longer among the live slots, which is what happens when the
-  // min-notice clock retires it mid-form. Closing the form then drops the
-  // visitor back to that day's remaining times — their day and their place are
-  // kept — instead of leaving a form open on a time the server would refuse.
-  const formOpen = selectedDay !== null && formSlot !== null && activeDay !== null;
-  const expanded = activeDay !== null;
   const spring = reducedMotion
     ? { duration: 0 }
     : { type: "spring" as const, stiffness: 300, damping: 30 };
   const fade = reducedMotion ? { duration: 0 } : { duration: 0.18, ease: "easeOut" as const };
 
+  const startStep = (next: typeof stage) => {
+    if (!standalone || stage === next) return;
+    if (surfaceRef.current && !reducedMotion && window.matchMedia("(min-width: 64rem)").matches) {
+      previousHeight.current = surfaceRef.current.getBoundingClientRect().height;
+    }
+    setDirection(next === "date" || stage === "details" ? "back" : "forward");
+  };
+
   const handleDayClick = (key: string) => {
+    startStep("time");
     setPickedDay(key);
+    setPreviousSlot(null);
     // A new date invalidates a chosen time; stage 3 folds back to stage 2.
     if (selectedSlot) onClearSlot?.();
     window.requestAnimationFrame(() => focusWhenVisible("[data-meet-time]"));
+  };
+
+  const returnToDate = () => {
+    if (!activeDay) return;
+    setMonthKey(activeDay.slice(0, 7));
+    startStep("date");
+    setPickedDay(null);
+    setPreviousSlot(null);
+    window.requestAnimationFrame(() => focusWhenVisible(`[data-meet-date="${activeDay}"]:enabled`, true));
+  };
+
+  const returnToTimes = () => {
+    if (standalone && activeDay && selectedSlot) {
+      startStep("time");
+      setMonthKey(activeDay.slice(0, 7));
+      setPickedDay(activeDay);
+      setPreviousSlot(selectedSlot);
+      const selector = `[data-meet-time="${CSS.escape(selectedSlot)}"]`;
+      window.requestAnimationFrame(() => focusWhenVisible(selector, true));
+    }
+    onClearSlot?.();
+  };
+
+  const rememberTimePointer = (event: PointerEvent<HTMLButtonElement>) => {
+    timePointer.current = event.pointerType;
+  };
+  const chooseTime = (iso: string, event: MouseEvent<HTMLButtonElement>) => {
+    // WebKit can turn a touch into a mouse click. The preceding pointerdown
+    // still identifies the device. Keyboard activation has a zero click count.
+    const touchEntry = event.detail > 0 && timePointer.current === "touch";
+    timePointer.current = null;
+    startStep("details");
+    onSelect(iso, timezone, durationMinutes, touchEntry);
   };
 
   /**
@@ -580,7 +651,7 @@ export function SlotPicker(props: {
    */
   const renderCalendar = (prefix: string) => (
     <div className="select-none">
-      <div className="mb-3 flex items-center justify-between border-b border-hairline pb-2">
+      <div className={`mb-3 flex items-center justify-between ${styles.panelHeading} ${styles.monthHeading}`}>
         <AnimatePresence mode="popLayout" initial={false} custom={navDir}>
           <motion.p
             key={month.key}
@@ -588,7 +659,7 @@ export function SlotPicker(props: {
             animate={{ opacity: 1, x: 0 }}
             exit={reducedMotion ? undefined : { opacity: 0, x: navDir * -16 }}
             transition={fade}
-            className="font-serif-display text-lg font-semibold text-ink"
+            className="font-serif-display text-xl font-semibold text-ink"
           >
             {/* A fixed campaign month is known on the server. Other calendars
                 wait for the visitor's timezone before revealing the label. */}
@@ -601,7 +672,7 @@ export function SlotPicker(props: {
             </span>
           </motion.p>
         </AnimatePresence>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center">
           <button
             type="button"
             aria-label="Previous month"
@@ -610,7 +681,7 @@ export function SlotPicker(props: {
               setNavDir(-1);
               setMonthKey(months[monthIndex - 1]?.key ?? month.key);
             }}
-            className={`grid size-11 place-items-center rounded-full text-ink-soft transition-colors duration-150 enabled:hover:bg-accent/10 enabled:hover:text-accent disabled:opacity-40 ${FOCUS_RING}`}
+            className={`${styles.monthArrow} ${FOCUS_RING}`}
           >
             <ChevronLeft className="h-4 w-4" strokeWidth={1.5} />
           </button>
@@ -622,21 +693,16 @@ export function SlotPicker(props: {
               setNavDir(1);
               setMonthKey(months[monthIndex + 1]?.key ?? month.key);
             }}
-            className={`grid size-11 place-items-center rounded-full text-ink-soft transition-colors duration-150 enabled:hover:bg-accent/10 enabled:hover:text-accent disabled:opacity-40 ${FOCUS_RING}`}
+            className={`${styles.monthArrow} ${FOCUS_RING}`}
           >
             <ChevronRight className="h-4 w-4" strokeWidth={1.5} />
           </button>
         </div>
       </div>
 
-      <div className="grid grid-cols-7 gap-1.5">
-        {WEEKDAY_HEADER.map((w) => (
-          <p
-            key={w}
-            className="pb-2 text-center text-[11px] font-medium text-ink-mute"
-          >
-            {w}
-          </p>
+      <div className={`grid grid-cols-7 gap-1.5 ${styles.calendarGrid}`}>
+        {WEEKDAY_HEADER.map((weekday) => (
+          <p key={weekday} className={styles.weekday}>{weekday}</p>
         ))}
       </div>
       <AnimatePresence mode="popLayout" initial={false} custom={navDir}>
@@ -646,7 +712,7 @@ export function SlotPicker(props: {
           animate={{ opacity: 1, x: 0 }}
           exit={reducedMotion ? undefined : { opacity: 0, x: navDir * -28 }}
           transition={fade}
-          className="grid grid-cols-7 gap-1.5"
+          className={`grid grid-cols-7 gap-1.5 ${styles.calendarGrid}`}
           // One step per marked diagonal, so the wave's period is exactly its
           // journey. Inherited by the cells rather than repeated 42 times.
           style={hydrated ? ({ "--meet-cycle": `${waveSpan * 240}ms` } as CSSProperties) : undefined}
@@ -655,10 +721,9 @@ export function SlotPicker(props: {
             // `inMonth` is load-bearing, not decoration. A grid's leading and
             // trailing cells carry the REAL keys of the adjacent month, so
             // August's sixth row holds "2026-09-01": without this check that
-            // cell matches a September selection and renders the ink pill, as a
-            // black square on a cell that draws no number. It stayed hidden
-            // while out-of-month cells were plain spans and appeared the moment
-            // all 42 became buttons.
+            // cell matches a September selection even though adjacent months'
+            // dates are disabled. The public calendar shows these dates only
+            // as context for the current month.
             //
             // It also keeps the layoutId unique. During a month transition both
             // months are briefly mounted, so the same selection could otherwise
@@ -709,6 +774,7 @@ export function SlotPicker(props: {
                 key={cell.key}
                 type="button"
                 disabled={selecting || !bookable}
+                data-meet-date={standalone && hydrated && cell.inMonth ? cell.key : undefined}
                 // Both gated on `hydrated`: which cells are in-month is a
                 // function of the visitor's timezone, so emitting either of
                 // these server-side would be a hydration mismatch for anyone
@@ -726,28 +792,28 @@ export function SlotPicker(props: {
                 // No entrance on the first commit: these cells are already in
                 // the server HTML, so fading them up from 0 would flash away
                 // something the visitor can see.
-                initial={reducedMotion || !hydrated ? false : { opacity: 0, y: 4 }}
+                initial={standalone || reducedMotion || !hydrated ? false : { opacity: 0, y: 4 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={
                   reducedMotion
                     ? { duration: 0 }
                     : { delay: Math.min(i * 0.006, 0.18), duration: 0.16 }
                 }
-                className={`relative flex aspect-square items-center justify-center rounded-lg text-sm tabular-nums transition-colors duration-150 ${FOCUS_RING} ${
+                className={`relative flex aspect-square ${styles.dayCell} items-center justify-center rounded-lg text-sm tabular-nums transition-colors duration-150 motion-reduce:transition-none ${FOCUS_RING} ${
                   isActive
-                    ? "font-semibold text-paper"
+                    ? styles.chosenDay
                     : bookable
-                      ? "font-medium text-ink hover:bg-ink/[0.06]"
+                      ? styles.bookableDay
                       : undecided
                         ? "cursor-default text-ink-soft"
-                        : "cursor-default text-ink-faint"
+                        : `cursor-default text-ink-faint ${styles.unavailableDay}`
                 }`}
               >
                 {isActive ? (
                   <motion.span
                     layoutId={`${prefix}-selected-day`}
                     transition={spring}
-                    className="absolute inset-0 rounded-lg bg-ink"
+                    className={`absolute inset-0 rounded-[inherit] ${styles.selection}`}
                     aria-hidden
                   />
                 ) : null}
@@ -757,7 +823,7 @@ export function SlotPicker(props: {
                   }`}
                   style={{ transitionDelay: `${wave}s` }}
                 >
-                  {hydrated && cell.inMonth ? cell.dayNum : ""}
+                  {hydrated && (standalone || cell.inMonth) ? cell.dayNum : ""}
                 </span>
                 {marked ? (
                   <>
@@ -789,12 +855,9 @@ export function SlotPicker(props: {
     </div>
   );
 
-  // Quiet text buttons, no per-chip borders: the whole grid reads as one
-  // typographic block. Keyed by day so switching dates re-runs the stagger
-  // inside a panel frame that never moves.
   /**
    * The slim column is a fresh scroll container that mounts at scrollTop 0,
-   * so a time picked further down the day (7:30pm out of an 08:30-22:00 list)
+   * so a time picked further down the day (7:30pm out of a 09:00-22:00 list)
    * would sit below the fold and the visitor would see no selection at all
    * next to a form that claims one.
    *
@@ -835,9 +898,10 @@ export function SlotPicker(props: {
     list.scrollTop = Math.max(0, list.scrollTop + delta - (l.height - c.height) / 2);
   };
 
+  // Key by day so switching dates re-runs the stagger inside the same frame.
   const renderTimesWide = () => (
     <div key={`wide-${activeDay}`}>
-      <p className="font-serif-display mb-3 hidden border-b border-hairline pb-2 text-lg font-semibold text-ink sm:block">
+      <p className={`mb-3 hidden text-lg font-semibold text-ink sm:block font-serif-display ${styles.panelHeading} ${styles.timesHeading}`}>
         {activeSlots.length > 0 ? longDayFmt.format(Date.parse(activeSlots[0])) : ""}
       </p>
       <div className="grid grid-cols-3 gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
@@ -846,7 +910,7 @@ export function SlotPicker(props: {
             key={iso}
             type="button"
             disabled={selecting}
-            data-meet-time
+            data-meet-time={iso}
             onClick={() => onSelect(iso, timezone, durationMinutes)}
             aria-label={`${longDayFmt.format(Date.parse(iso))} at ${timeFmt.format(Date.parse(iso))}`}
             initial={reducedMotion ? false : { opacity: 0, y: 6 }}
@@ -854,7 +918,7 @@ export function SlotPicker(props: {
             transition={
               reducedMotion ? { duration: 0 } : { delay: Math.min(i * 0.012, 0.2), duration: 0.16 }
             }
-            className={`min-h-11 rounded-[10px] border border-hairline px-1.5 py-2 text-sm font-medium text-ink-soft tabular-nums transition-colors duration-150 hover:bg-ink/[0.06] hover:text-ink disabled:opacity-60 ${FOCUS_RING}`}
+            className={`${styles.timeOption} ${styles.wideTime} min-h-11 px-1.5 py-2 text-sm disabled:opacity-60 ${FOCUS_RING}`}
           >
             {timeFmt.format(Date.parse(iso))}
           </motion.button>
@@ -864,37 +928,46 @@ export function SlotPicker(props: {
   );
 
   const renderTimesSlim = (prefix: string) => (
-    <div key={`slim-${activeDay}`}>
-      <p className="font-serif-display mb-3 border-b border-hairline pb-2 text-base font-semibold text-ink">
-        {activeDay ? shortDayFmt.format(Date.parse(activeSlots[0] ?? selectedSlot ?? "")) : ""}
-      </p>
+    <div key={`slim-${activeDay}`} className={standalone ? styles.timeRailContent : undefined}>
+      {standalone ? (
+        <div className={styles.appointmentBar}>
+          <AppointmentSummary start={activeSlots[0]} timezone={timezone} availableCount={activeSlots.length} />
+          <button type="button" className={styles.changeDate} disabled={selecting} onClick={returnToDate}>Change date</button>
+        </div>
+      ) : (
+        <p className={`mb-3 text-base font-semibold text-ink font-serif-display ${styles.panelHeading} ${styles.timesHeading}`}>
+          {activeDay ? shortDayFmt.format(Date.parse(activeSlots[0])) : ""}
+        </p>
+      )}
       <div
         ref={revealChosenTime}
-        className={`${styles.scrollList} flex max-h-[420px] flex-col gap-0.5 overflow-y-auto pr-2`}
+        className={`${styles.scrollList} meet-time-list flex max-h-[420px] flex-col gap-0.5 overflow-y-auto pr-2`}
       >
         {activeSlots.map((iso) => {
-          const isChosen = iso === selectedSlot;
+          const isChosen = iso === (selectedSlot ?? previousSlot);
           return (
             <button
               key={iso}
               type="button"
               disabled={selecting}
-              data-meet-time
-              onClick={() => onSelect(iso, timezone, durationMinutes)}
+              data-meet-time={iso}
+              onPointerDown={rememberTimePointer}
+              onClick={(event) => chooseTime(iso, event)}
               aria-pressed={isChosen}
-              className={`relative min-h-11 shrink-0 rounded-md px-3 py-2 text-sm font-medium tabular-nums transition-colors duration-150 disabled:opacity-60 ${FOCUS_RING} ${
-                isChosen ? "text-paper" : "text-ink-soft hover:bg-ink/[0.06] hover:text-ink"
-              }`}
+              className={`${styles.timeOption} relative min-h-11 shrink-0 rounded-md px-3 py-2 text-sm disabled:opacity-60 ${FOCUS_RING}`}
             >
-              {isChosen ? (
+              {isChosen && !standalone ? (
                 <motion.span
                   layoutId={`${prefix}-selected-time`}
                   transition={spring}
-                  className="absolute inset-0 rounded-md bg-ink"
+                  className={`absolute inset-0 rounded-[inherit] ${styles.selection}`}
                   aria-hidden
                 />
               ) : null}
-              <span className="relative z-10">{timeFmt.format(Date.parse(iso))}</span>
+              <span className="relative z-10">
+                {standalone && isChosen && <Check size={14} strokeWidth={2} className="mr-1.5 inline-block align-[-0.125em]" aria-hidden />}
+                {timeFmt.format(Date.parse(iso))}
+              </span>
             </button>
           );
         })}
@@ -907,21 +980,77 @@ export function SlotPicker(props: {
       ? shortDayFmt.format(Date.parse(activeSlots[0]))
       : (activeDay ?? "");
 
+  const availabilityStatus = (
+    <p role="status" className="sr-only">
+      {pending
+        ? "Loading available times"
+        : slotsByDay.size === 0
+          ? "No times available right now"
+          : formOpen
+            ? "Enter your booking details."
+            : expanded
+              ? `${activeSlots.length} available ${activeSlots.length === 1 ? "time" : "times"} for ${summaryLabel}.`
+              : `${slotsByDay.size} ${slotsByDay.size === 1 ? "day" : "days"} with available times. Select a date.`}
+    </p>
+  );
+  const captionRow = !expanded ? (
+    <div className="mt-3 flex h-5 items-center justify-center">
+      <AnimatePresence mode="wait" initial={false}>
+        {caption ? (
+          <motion.p
+            key={caption}
+            initial={reducedMotion ? false : { opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={reducedMotion ? undefined : { opacity: 0 }}
+            transition={{ duration: reducedMotion ? 0 : 0.24, ease: "easeOut" }}
+            className="text-xs text-ink-mute"
+          >
+            {caption}
+          </motion.p>
+        ) : null}
+      </AnimatePresence>
+    </div>
+  ) : null;
+
+  if (standalone) {
+    return (
+      <div className={styles.standalone} data-stage={stage} data-direction={direction}>
+        {eventHeader}
+        {availabilityStatus}
+        <div ref={surfaceRef} className={styles.phaseSurface}>
+          {formOpen && selectedSlot ? (
+            <div className={styles.detailsCard}>
+              <div className={styles.appointmentBar}>
+                <AppointmentSummary start={selectedSlot} timezone={timezone} durationMinutes={durationMinutes} />
+                <button type="button" onClick={returnToTimes} disabled={selecting} className={styles.changeTime}>Change time</button>
+              </div>
+              <div className={styles.formBody}>{formSlot}</div>
+            </div>
+          ) : (
+            <div className={styles.bookingGrid}>
+              <div
+                data-meet-calendar
+                aria-busy={pending || undefined}
+                className={`${styles.calendarPane} ${pending ? "meet-seeking" : settling ? "meet-settling" : ""}`}
+              >
+                {renderCalendar("public")}
+              </div>
+              {expanded && (
+                <aside className={styles.timeRail} aria-label="Available times">
+                  {renderTimesSlim("public")}
+                </aside>
+              )}
+            </div>
+          )}
+        </div>
+        {captionRow}
+      </div>
+    );
+  }
+
   return (
     <div>
-      {/*
-        One persistent live region. It used to live inside the skeleton, so it
-        mounted and unmounted with it, which is the least reliable live-region
-        pattern there is. A region that already exists announces reliably; its
-        pending text is what the server renders, so hydration matches.
-      */}
-      <p role="status" aria-live="polite" className="sr-only">
-        {pending
-          ? "Loading available times"
-          : slotsByDay.size === 0
-            ? "No times available right now"
-            : `${slotsByDay.size} ${slotsByDay.size === 1 ? "day" : "days"} with available times. Select a date.`}
-      </p>
+      {availabilityStatus}
 
       {/* Phones: one stage on screen at a time, summary bars walk back. */}
       <div className="lg:hidden">
@@ -1059,49 +1188,14 @@ export function SlotPicker(props: {
         </div>
       </div>
 
-      {/*
-        Reserved caption row: 20px tall in the opening stage whether or not it
-        has anything to say, so the ">3s" message and the "fully booked" line
-        both cost zero reflow. The timezone row's top margin drops from mt-7 to
-        mt-3 to pay for it, so the composition is about 16px taller, not 48px.
-      */}
-      {!expanded ? (
-        <div className="mt-3 flex h-5 items-center justify-center">
-          <AnimatePresence mode="wait" initial={false}>
-            {caption ? (
-              <motion.p
-                key={caption}
-                initial={reducedMotion ? false : { opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={reducedMotion ? undefined : { opacity: 0 }}
-                transition={{ duration: reducedMotion ? 0 : 0.24, ease: "easeOut" }}
-                className="text-xs text-ink-mute"
-              >
-                {caption}
-              </motion.p>
-            ) : null}
-          </AnimatePresence>
-        </div>
-      ) : null}
+      {captionRow}
 
-      {/*
-        h-6 is the trigger button's exact height (16px line box + py-1), so the
-        row holds its space from the server frame onward. The select itself
-        only mounts once hydrated, because its label is the resolved timezone
-        name and the server resolves that to the SERVER's zone.
-      */}
       <div
         className={`${expanded ? "mt-4" : "mt-3"} ${
           formOpen ? "hidden lg:flex" : "flex"
-        } h-6 justify-center`}
+        } h-11 justify-center`}
       >
-        {hydrated ? (
-          <TimezoneSelect
-            value={timezone}
-            slotIso={selectedDay ? selectedSlot : activeSlots[0] ?? null}
-            onChange={handleTimezoneChange}
-          />
-        ) : null}
+        {timezoneControl}
       </div>
     </div>
   );

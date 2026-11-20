@@ -6,7 +6,7 @@ lifecycle email, and gives each booker a private link to reschedule or cancel,
 without sending your visitors to a scheduling vendor.
 
 <p align="center">
-  <img src="docs/media/booking.gif" alt="Booking a call: a month calendar slides aside as the day's times expand, then compresses again as the guest form opens" width="900">
+  <img src="docs/media/booking.gif" alt="Choosing a date and time, then entering booking details in the self-hosted calendar" width="900">
 </p>
 
 Built and operated by [Clusy](https://clusy.io). The production booking flow
@@ -20,6 +20,12 @@ runs at [clusy.io/meet](https://clusy.io/meet).
 teammate or a Meeting with your configured duration and quorum. Enable Investor
 to offer 30-minute calls during a specific date range, with a required host and
 one available partner. Each option has a direct link, such as `/book/chat`.
+Visitors choose a date, choose a time, and confirm their details. They can
+change the time and keep their draft. Google Meet is the default when available.
+Visitors can select Microsoft Teams when both services are available. A
+Microsoft-only calendar shows Teams from the start. If the assigned host
+cannot create the preferred link, the scheduler tries another available
+service and names the actual join link on the confirmation.
 
 **Team availability** across any mix of Google Calendar and Microsoft Outlook
 accounts, with a configurable quorum and per-account busy calendars. Each host
@@ -134,10 +140,10 @@ become available.*
 - **Real meetings count first.** A level (Light, Balanced or Packed) says how
   booked a day should look, and only the shortfall is hidden. Each booking
   gives a hidden time back, and a day that is already that busy hides nothing.
-- **It looks like a real calendar.** Days look busiest when they are close
-  (Balanced: about 55% of today taken, easing to about 25% weeks out), with
-  each day nudged a little off that curve. Hidden times are 30, 60 or 90
-  minute blocks that land mostly mid-morning and mid-afternoon.
+- **Nearer days look busier.** Light targets about 55% booked today and 30%
+  several weeks out. Balanced targets 75% and 50%, and Packed targets 90%
+  and 65%. The target varies slightly by day. Hidden times are 30-, 60- or
+  90-minute blocks that land mostly mid-morning and mid-afternoon.
 - **The same on every refresh.** Every choice is an HMAC of the page and the
   slot keyed from `MEET_TOKEN_SECRET`, so every server instance hides the same
   times, nothing moves with the clock during the day, and nobody can work out
@@ -333,10 +339,7 @@ authentication and cross-timezone timeline maths, request origin checks, email
 routing, reminders, Slack payloads and delivery classification, Microsoft
 provider behaviour, provider fallback, and stale reschedule rejection.
 
-Some behaviour a unit test cannot see. The booking page's time column has four
-properties that must hold at once, all of them facts about layout and component
-lifecycle that only a real browser can observe, and each of them has been
-broken by a fix to one of the others:
+Run the browser checks against a local instance with sample availability.
 
 ```bash
 MEET_MOCK_MODE=1 npm run dev
@@ -344,11 +347,9 @@ node docs/slotpicker-invariants.mjs http://localhost:3000/book/meeting
 node docs/loading-geometry.mjs http://localhost:3000/book/meeting
 ```
 
-The first checks the time column and, in a second pass, that nothing mismatches
-during hydration under `prefers-reduced-motion`. Playwright emulates
-`no-preference` by default, so without that pass the suite reports green on the
-only path where such a bug cannot exist. The second measures the calendar card
-before and after availability arrives and fails if it moved.
+The first checks date, time and details navigation, draft retention, scroll
+position, keyboard and touch focus, and reduced-motion behavior. The second
+checks that loading availability leaves the calendar in place on desktop and mobile.
 
 It needs `playwright-core` and a local Chrome build, taken ad hoc rather than
 carried as a dependency:

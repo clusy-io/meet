@@ -279,7 +279,13 @@ export interface AvailabilityResponse {
 }
 
 /** POST /api/meet/bookings */
+export const VIDEO_CHOICES = ["meet", "teams"] as const;
+export type VideoChoice = (typeof VIDEO_CHOICES)[number];
+export const DEFAULT_VIDEO_CHOICE: VideoChoice = "meet";
+
 export interface CreateBookingRequest {
+  /** Preferred conferencing service when an attending host can provide it. */
+  video?: VideoChoice;
   meetingType?: MeetingType;
   start: string; // UTC ISO, must equal a currently-available slot start
   /** Member key of the personal page this came from; omitted = team page. */

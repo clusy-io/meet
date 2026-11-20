@@ -122,13 +122,15 @@ async function mockGetBusy(
 }
 
 async function mockCreateEvent(
-  _refreshToken: string,
+  provider: CalendarProviderId,
   input: CreateEventInput
 ): Promise<CreatedEvent> {
   const code = meetCode(hash32(`${input.calendarId}:${input.startAt}:${input.summary}`));
   return {
     eventId: `mock-${crypto.randomUUID().slice(0, 8)}`,
-    meetingUrl: `https://meet.google.com/mock-${code}`,
+    meetingUrl: !input.withConference ? null : provider === "google"
+      ? `https://meet.google.com/mock-${code}`
+      : `https://teams.microsoft.com/l/meetup-join/mock-${code}`,
   };
 }
 
@@ -156,7 +158,7 @@ export function mockProvider(id: CalendarProviderId): CalendarProvider {
       ];
     },
     getBusy: mockGetBusy,
-    createEvent: mockCreateEvent,
+    createEvent: (_refreshToken, input) => mockCreateEvent(id, input),
     async updateEventTime() {
       // No provider-side state to move in mock mode.
     },

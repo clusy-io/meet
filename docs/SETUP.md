@@ -68,6 +68,11 @@ Grant delegated `offline_access`, `openid`, `email`, `User.Read`, and
 `Calendars.ReadWrite` permissions. Set `MEET_MICROSOFT_CLIENT_ID` and
 `MEET_MICROSOFT_CLIENT_SECRET`.
 
+Teams is available for connected Microsoft work accounts whose email domain
+matches the booking hostname (after removing `www.`). If you host the
+scheduler at `meet.example.com` and your team uses `@example.com`, set
+`MEET_TEAMS_DOMAINS=example.com`. Separate additional work domains with commas.
+
 ## 4. Email
 
 Verify a domain in Resend, then set `RESEND_API_KEY` and `MEET_EMAIL_FROM`.

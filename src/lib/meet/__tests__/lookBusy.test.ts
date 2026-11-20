@@ -296,6 +296,20 @@ describe("keyed draws", () => {
 });
 
 describe("levels", () => {
+  it.each([
+    ["light", 8, 12],
+    ["balanced", 4, 8],
+    ["packed", 2, 6],
+  ] as const)("shows the expected choices on a fully open day at %s", (level, today, fourWeeksOut) => {
+    const key = { ...secretKey, day: () => 0.5 };
+    for (const [daysAhead, expected] of [[0, today], [28, fourWeeksOut]]) {
+      const grid = dayGrid(daysAhead);
+      const open = new Set(grid);
+      const hidden = lookBusyHiddenStarts(input({ grid, open, level, key }));
+      expect(visible(grid, open, hidden)).toHaveLength(expected);
+    }
+  });
+
   it("look busiest today and thin out further ahead", () => {
     for (const level of LOOK_BUSY_LEVELS) {
       let previous = Number.POSITIVE_INFINITY;

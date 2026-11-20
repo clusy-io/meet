@@ -5,6 +5,7 @@ import MeetBooking from "@/components/meet/MeetBooking";
 import MeetShell from "@/components/meet/MeetShell";
 import { getMeetConfig } from "@/lib/meet/config";
 import { teamMeetingTypes } from "@/lib/meet/meetingTypes";
+import { availableVideoProviders } from "@/lib/meet/videoProviders";
 import { SITE } from "@/meet.config";
 
 export const dynamic = "force-dynamic";
@@ -38,17 +39,19 @@ export async function generateMetadata(props: RouteProps): Promise<Metadata> {
 
 export default async function TeamBookingPage(props: RouteProps) {
   const option = await bookingOption(props);
+  const videoProviders = await availableVideoProviders({ meetingType: option.key });
+  const title = option.key === "investor" ? "Investor meeting" : option.label;
   return (
-    <MeetShell prime={<AvailabilityPrime meetingType={option.key} />}>
-      <div className="flex flex-1 justify-center px-5 pt-6 pb-16 sm:px-8 sm:pt-10">
-        <MeetBooking
-          key={option.key}
-          headline={`${option.label} · ${option.durationMinutes} min`}
-          meetingType={option.key}
-          initialDate={option.initialDate}
-          blurb={option.description}
-        />
-      </div>
+    <MeetShell calendar prime={<AvailabilityPrime meetingType={option.key} />}>
+      <MeetBooking
+        key={option.key}
+        headline={`${title} with ${SITE.name}`}
+        durationMinutes={option.durationMinutes}
+        meetingType={option.key}
+        initialDate={option.initialDate}
+        blurb={option.description}
+        videoProviders={videoProviders}
+      />
     </MeetShell>
   );
 }

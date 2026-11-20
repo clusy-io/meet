@@ -206,11 +206,11 @@ describe("the team page looking busy", () => {
 
   it("hides nothing on a day real meetings already make busy", async () => {
     teamLooksBusy("packed");
-    // Both members are in meetings 09:00-14:00 on Friday: 10 of 16 taken.
-    const morning = { startMs: at("2026-08-21T09:00:00Z"), endMs: at("2026-08-21T14:00:00Z") };
-    mocks.busy.set("one", [morning]);
-    mocks.busy.set("two", [morning]);
-    expect(onDay(await slots(), WEEK[4])).toHaveLength(6);
+    // Both members have 13 of Friday's 16 slots taken by real meetings.
+    const event = { startMs: at("2026-08-21T09:00:00Z"), endMs: at("2026-08-21T15:30:00Z") };
+    mocks.busy.set("one", [event]);
+    mocks.busy.set("two", [event]);
+    expect(onDay(await slots(), WEEK[4])).toHaveLength(3);
   });
 
   it("gives a hidden time back for every booking", async () => {

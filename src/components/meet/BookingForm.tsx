@@ -1,15 +1,18 @@
 "use client";
 
 import {
+  useEffect,
   useId,
+  useRef,
   type Dispatch,
   type FormEvent,
   type ReactElement,
   type SetStateAction,
 } from "react";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, ChevronDown } from "lucide-react";
 import styles from "./BookingDetails.module.css";
-import type { BookingView, CreateBookingRequest, MeetingType } from "@/lib/meet/types";
+import { VideoCallChoice } from "./VideoCallChoice";
+import type { BookingView, CreateBookingRequest, MeetingType, VideoChoice } from "@/lib/meet/types";
 
 /**
  * Public booking details form. Owns the booking POST: 409 means the slot was
@@ -38,6 +41,9 @@ export function BookingForm({
   timezone,
   meetingType,
   state,
+  videoProviders,
+  video,
+  onVideoChange,
   onDone,
   onSlotTaken,
   host,
@@ -47,6 +53,9 @@ export function BookingForm({
   /** Event type; the server resolves its length from the page and type. */
   meetingType?: MeetingType;
   state: BookingFormState;
+  videoProviders: VideoChoice[];
+  video: VideoChoice | undefined;
+  onVideoChange: (value: VideoChoice) => void;
   onDone: (booking: BookingView) => void;
   onSlotTaken: () => void;
   /** Personal page slug; omitted books the team page. */
@@ -69,10 +78,20 @@ export function BookingForm({
   const guestsId = `${fieldId}-guests`;
   const notesId = `${fieldId}-notes`;
   const honeypotId = `${fieldId}-website-url`;
+  const optionsRef = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    if ((guestInput || guestError) && optionsRef.current) optionsRef.current.open = true;
+  }, [guestInput, guestError]);
+
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (pending) return;
+    if (guestError) {
+      if (optionsRef.current) optionsRef.current.open = true;
+      document.getElementById(guestsId)?.focus();
+      return;
+    }
     setPending(true);
     setError(null);
 
@@ -86,6 +105,7 @@ export function BookingForm({
     if (trimmedNotes) body.notes = trimmedNotes;
     if (meetingType) body.meetingType = meetingType;
     if (host) body.host = host;
+    if (video) body.video = video;
     if (guests.length > 0) body.guests = guests;
     if (websiteUrl) body.company = websiteUrl;
 
@@ -143,7 +163,7 @@ export function BookingForm({
   };
 
   return (
-    <form onSubmit={handleSubmit} aria-busy={pending} className={`${styles.form} space-y-4`}>
+    <form onSubmit={handleSubmit} aria-busy={pending} className={styles.form}>
       <div className={styles.fields}>
         <div>
           <label htmlFor={nameId} className={styles.label}>
@@ -185,81 +205,90 @@ export function BookingForm({
       </div>
 
       <div>
-        <label htmlFor={guestsId} className={styles.label}>
-          Add guests <span className="font-normal text-ink-faint">(optional)</span>
-        </label>
-        {guests.length > 0 ? (
-          <ul className="mb-2 flex flex-wrap gap-1.5">
-            {guests.map((g) => (
-              <li
-                key={g}
-                className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-hairline bg-paper px-2.5 py-1 text-sm text-ink"
-              >
-                <span className="min-w-0 break-all">{g}</span>
-                <button
-                  type="button"
-                  disabled={pending}
-                  aria-label={`Remove ${g}`}
-                  onClick={() => setGuests(guests.filter((x) => x !== g))}
-                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-ink-mute transition-colors duration-100 hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
-                >
-                  &#215;
-                </button>
-              </li>
-            ))}
-          </ul>
-        ) : null}
-        <input
-          id={guestsId}
-          name="guests"
-          type="text"
-          inputMode="email"
-          autoComplete="off"
-          disabled={pending}
-          aria-invalid={!!guestError || undefined}
-          aria-describedby={guestError ? `${guestsId}-error` : `${guestsId}-hint`}
-          value={guestInput}
-          onChange={(e) => {
-            setGuestInput(e.target.value);
-            setGuestError(null);
-            if (e.target.value.endsWith(",")) addGuest(e.target.value);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              addGuest(guestInput);
-            } else if (e.key === "Backspace" && !guestInput && guests.length > 0) {
-              setGuests(guests.slice(0, -1));
-            }
-          }}
-          onBlur={() => addGuest(guestInput)}
-          placeholder="guest@company.com"
-          className={styles.input}
-        />
-        {guestError ? (
-          <p id={`${guestsId}-error`} role="alert" className="mt-1 text-sm text-status-warn">
-            {guestError}
-          </p>
-        ) : null}
-        <p id={`${guestsId}-hint`} className="mt-1.5 text-xs leading-5 text-ink-mute">Press Enter to add a guest to the invite.</p>
-      </div>
-
-      <div>
         <label htmlFor={notesId} className={styles.label}>
-          Anything we should know? <span className="font-normal text-ink-faint">(optional)</span>
+          What would you like to talk about? <span className="font-normal text-ink-faint">(optional)</span>
         </label>
         <textarea
           id={notesId}
           name="notes"
-          rows={3}
+          rows={2}
           disabled={pending}
           maxLength={2000}
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
-          placeholder="Context, questions, or what you would like to cover"
+          placeholder="A sentence or two"
           className={`${styles.input} resize-y`}
         />
       </div>
+
+      <details ref={optionsRef} className={styles.extraFields}>
+        <summary>
+          <span>{videoProviders.length > 1 ? "Guests & video" : "Guests"}{guests.length > 0 && ` (${guests.length})`}</span>
+          <ChevronDown size={14} aria-hidden />
+        </summary>
+        <div>
+          <label htmlFor={guestsId} className={styles.label}>
+            Add guests <span className="font-normal text-ink-faint">(optional)</span>
+          </label>
+          {guests.length > 0 ? (
+            <ul className="mb-2 flex flex-wrap gap-1.5">
+              {guests.map((g) => (
+                <li
+                  key={g}
+                  className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-hairline bg-paper px-2.5 py-1 text-sm text-ink"
+                >
+                  <span className="min-w-0 break-all">{g}</span>
+                  <button
+                    type="button"
+                    disabled={pending}
+                    aria-label={`Remove ${g}`}
+                    onClick={() => setGuests(guests.filter((x) => x !== g))}
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-ink-mute transition-colors duration-100 hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60"
+                  >
+                    &#215;
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          <input
+            id={guestsId}
+            name="guests"
+            type="text"
+            inputMode="email"
+            autoComplete="off"
+            disabled={pending}
+            aria-invalid={!!guestError || undefined}
+            aria-describedby={guestError ? `${guestsId}-error` : `${guestsId}-hint`}
+            value={guestInput}
+            onChange={(e) => {
+              setGuestInput(e.target.value);
+              setGuestError(null);
+              if (e.target.value.endsWith(",")) addGuest(e.target.value);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                addGuest(guestInput);
+              } else if (e.key === "Backspace" && !guestInput && guests.length > 0) {
+                setGuests(guests.slice(0, -1));
+              }
+            }}
+            onBlur={() => addGuest(guestInput)}
+            placeholder="guest@company.com"
+            className={styles.input}
+          />
+          {guestError ? (
+            <p id={`${guestsId}-error`} role="alert" className="mt-1 text-sm text-status-warn">
+              {guestError}
+            </p>
+          ) : null}
+          <p id={`${guestsId}-hint`} className="mt-1.5 text-xs leading-5 text-ink-mute">Press Enter to add a guest to the invite.</p>
+        </div>
+        {videoProviders.length > 1 && (
+          <VideoCallChoice options={videoProviders} value={video} onChange={onVideoChange} disabled={pending} />
+        )}
+      </details>
 
       {/* Honeypot: offscreen rather than display:none so bots still see and
           fill it, while autofill heuristics and real users never do. */}

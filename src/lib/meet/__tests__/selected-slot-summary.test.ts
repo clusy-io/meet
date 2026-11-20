@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { SelectedSlotSummary } from "@/components/meet/SelectedSlotSummary";
+import { AppointmentSummary, SelectedSlotSummary } from "@/components/meet/SelectedSlotSummary";
 
 function summary(start: string, durationMinutes = 30): string {
   return renderToStaticMarkup(createElement(SelectedSlotSummary, {
@@ -29,5 +29,28 @@ describe("selected booking time", () => {
   it("distinguishes hours repeated when daylight saving time ends", () => {
     const html = summary("2027-11-07T08:10:00Z", 60);
     expect(html).toContain("1:10 AM PDT to 1:10 AM PST");
+  });
+});
+
+describe("appointment summary", () => {
+  it.each([[1, "1 available time"], [3, "3 available times"]] as const)(
+    "shows the local date and count for %i choices",
+    (availableCount, label) => {
+      const html = renderToStaticMarkup(createElement(AppointmentSummary, {
+        start: "2027-01-01T00:15:00Z", timezone: "America/Los_Angeles", availableCount,
+      }));
+      expect(html).toContain("Thursday, December 31, 2026");
+      expect(html).toContain("December 2026");
+      expect(html).toContain(label);
+    }
+  );
+
+  it("shows both local offsets when the selected time spans a clock change", () => {
+    const html = renderToStaticMarkup(createElement(AppointmentSummary, {
+      start: "2026-11-01T08:45:00Z", timezone: "America/Los_Angeles", durationMinutes: 30,
+    })).replace(/\s+/gu, " ");
+    expect(html).toContain("Sunday, November 1, 2026");
+    expect(html).toContain("1:45 AM PDT – 1:15 AM PST");
+    expect(html).toContain("1:45 AM PDT to 1:15 AM PST");
   });
 });

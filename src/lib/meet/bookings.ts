@@ -13,8 +13,9 @@ import {
   getRuntimeMeetConfig,
 } from "./members";
 import { configForMeetingType, investorWindow } from "./meetingTypes";
-import { MEETING_TYPES } from "./types";
+import { DEFAULT_VIDEO_CHOICE, MEETING_TYPES, VIDEO_CHOICES } from "./types";
 import { getHistoricalPage, getPage, teamMemberWindows } from "./pages";
+import { videoServiceForAccount } from "./videoProviders";
 import { getProvider } from "./providers";
 import { notifyBookingSlack } from "./slackNotify";
 import { horizonEdgeMs, slotOnGrid, widestOverhangMin } from "./slots";
@@ -28,6 +29,7 @@ import type {
   CreateBookingRequest,
   Member,
   RescheduleRequest,
+  VideoChoice,
 } from "./types";
 
 /**
@@ -141,68 +143,31 @@ function accountRefreshToken(
     : decryptSecret(account.refreshTokenEnc);
 }
 
-/** Company domain from the configured site origin; empty when unparsable. */
-function companyDomain(config: MeetConfig): string {
-  try {
-    return new URL(config.siteOrigin).hostname
-      .replace(/^www\./, "")
-      .toLowerCase();
-  } catch {
-    return "";
-  }
-}
-
-/**
- * Organizer preference, per attending member in config order:
- * 1. a company-domain Microsoft account (invites come from your own domain, with a
- *    Teams link),
- * 2. any Google account (Meet link),
- * 3. any other Microsoft account (no video link).
- * Events land on the account's primary calendar, so a usable account only
- * needs a live grant; its busy-source calendar selection is irrelevant here.
- */
 interface OrganizerCandidate {
   account: CalendarAccount;
   withConference: boolean;
 }
 
+/**
+ * Keep the assigned hosts in roster order within each tier. A failed
+ * conference falls back to another video service, then a plain invitation.
+ */
 function organizerCandidates(
   config: MeetConfig,
   attending: Member[],
   accounts: CalendarAccount[],
+  preferred: VideoChoice = DEFAULT_VIDEO_CHOICE,
 ): OrganizerCandidate[] {
-  const domain = companyDomain(config);
-  const isCompanyMs = (a: CalendarAccount): boolean =>
-    a.provider === "microsoft" &&
-    domain !== "" &&
-    a.email.toLowerCase().endsWith(`@${domain}`);
-  const passes: Array<(a: CalendarAccount) => boolean> = [
-    isCompanyMs,
-    (a) => a.provider === "google",
-    (a) => a.provider === "microsoft",
-  ];
-  const out: OrganizerCandidate[] = [];
-  const seen = new Set<string>();
-  for (const pass of passes) {
-    for (const member of attending) {
-      for (const account of accounts) {
-        if (
-          seen.has(account.id) ||
-          account.memberKey !== member.key ||
-          account.status !== "ok" ||
-          !pass(account)
-        ) {
-          continue;
-        }
-        seen.add(account.id);
-        out.push({
-          account,
-          withConference: account.provider === "google" || isCompanyMs(account),
-        });
-      }
+  const tiers: OrganizerCandidate[][] = [[], [], []];
+  for (const member of attending) {
+    for (const account of accounts) {
+      if (account.memberKey !== member.key || account.status !== "ok") continue;
+      const service = videoServiceForAccount(config, account);
+      const tier = service === preferred ? 0 : service ? 1 : 2;
+      tiers[tier].push({ account, withConference: service !== null });
     }
   }
-  return out;
+  return tiers.flat();
 }
 
 /**
@@ -276,6 +241,7 @@ export async function createBooking(
 ): Promise<{ ok: true; booking: Booking } | BookingActionError> {
   const meetingType = req.meetingType ?? "meeting";
   if (!MEETING_TYPES.includes(meetingType)) return invalid("Unknown meeting type.");
+  if (req.video !== undefined && !VIDEO_CHOICES.includes(req.video)) return invalid("Unknown video service.");
   if (req.host && meetingType !== "meeting") return invalid("Unknown meeting type on this page.");
   const config = meetingType === "meeting"
     ? await getRuntimeMeetConfig()
@@ -423,7 +389,7 @@ export async function createBooking(
 
   try {
     const accounts = await store.listAccounts();
-    const candidates = organizerCandidates(config, attending, accounts);
+    const candidates = organizerCandidates(config, attending, accounts, req.video);
     for (const organizer of candidates) {
       const provider = getProvider(organizer.account.provider);
       let refreshToken: string;

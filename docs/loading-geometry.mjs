@@ -19,16 +19,7 @@
  * response, so this is a before/after of one box, not two guesses.
  */
 import { chromium } from "playwright-core";
-
-/*
- * Vercel Web Analytics injects /_vercel/insights/script.js, which only exists
- * on a Vercel deployment. Running the build locally therefore always logs one
- * 404 that has nothing to do with this page. Ignored NARROWLY, by exact path,
- * so any other failed request still fails the check.
- */
-const isLocalOnlyNoise = (text, location) =>
-  `${text} ${location?.url ?? ""}`.includes("_vercel/insights");
-
+import assert from "node:assert/strict";
 
 const url = process.argv[2] ?? "http://localhost:3000/book/meeting";
 const viewports = [
@@ -36,7 +27,7 @@ const viewports = [
   { name: "mobile", width: 390, height: 844 },
 ];
 
-const CARD = ".rounded-lg.border.bg-paper-raise";
+const CARD = "[data-meet-calendar]";
 const results = [];
 
 for (const vp of viewports) {
@@ -45,59 +36,49 @@ for (const vp of viewports) {
 
   const errors = [];
   page.on("console", (m) => {
-    if (m.type() === "error" && !isLocalOnlyNoise(m.text(), m.location())) errors.push(m.text());
+    if (m.type() === "error") errors.push(m.text());
   });
-  page.on("pageerror", (e) => !isLocalOnlyNoise(String(e)) && errors.push(String(e)));
+  page.on("pageerror", (e) => errors.push(String(e)));
 
-  // Hold availability back so the pending frame is observable.
+  // Release the actual local response only after measuring the pending frame.
+  // A fixed sleep could sample the same state twice on a slow machine.
+  const gate = Promise.withResolvers();
   await page.route("**/api/meet/availability*", async (route) => {
-    await new Promise((r) => setTimeout(r, 3500));
+    await gate.promise;
     await route.continue();
   });
-
   await page.goto(url, { waitUntil: "domcontentloaded" });
-  // The mobile and desktop cards are BOTH mounted; one is display:none. Wait
-  // for whichever is actually laid out at this viewport.
-  await page.waitForFunction(
-    (sel) => [...document.querySelectorAll(sel)].some((n) => n.getClientRects().length > 0),
-    CARD,
-    { timeout: 30000 }
-  );
-  await page.waitForTimeout(700); // past hydration, well before the response
+  const card = page.locator(CARD);
+  await card.waitFor();
+  assert.equal(await card.count(), 1, "Public booking should mount one responsive calendar");
+  const element = await card.elementHandle();
+  await card.locator("[data-meet-date]").first().waitFor();
+  await page.evaluate(() => document.fonts.ready);
+  assert.equal(await card.getAttribute("aria-busy"), "true", "First sample must be loading");
 
-  const before = await page.evaluate((sel) => {
-    const el = [...document.querySelectorAll(sel)].find((n) => n.getClientRects().length > 0);
-    const r = el.getBoundingClientRect();
-    const cells = [...el.querySelectorAll("button")].filter(
-      (b) => b.className.includes("aspect-square")
-    );
-    const c0 = cells[0]?.getBoundingClientRect();
-    return {
-      x: Math.round(r.x), y: Math.round(r.y),
-      w: Math.round(r.width), h: Math.round(r.height),
-      cellCount: cells.length,
-      cell0: c0 ? { x: Math.round(c0.x), y: Math.round(c0.y), w: Math.round(c0.width) } : null,
-      seeking: el.className.includes("meet-seeking"),
-    };
-  }, CARD);
-
-  await page.waitForTimeout(4200); // response has landed and animated
-
-  const after = await page.evaluate((sel) => {
-    const el = [...document.querySelectorAll(sel)].find((n) => n.getClientRects().length > 0);
-    const r = el.getBoundingClientRect();
-    const cells = [...el.querySelectorAll("button")].filter(
-      (b) => b.className.includes("aspect-square")
-    );
-    const c0 = cells[0]?.getBoundingClientRect();
-    return {
-      x: Math.round(r.x), y: Math.round(r.y),
-      w: Math.round(r.width), h: Math.round(r.height),
-      cellCount: cells.length,
-      cell0: c0 ? { x: Math.round(c0.x), y: Math.round(c0.y), w: Math.round(c0.width) } : null,
-      seeking: el.className.includes("meet-seeking"),
-    };
-  }, CARD);
+  async function measure() {
+    const dates = card.locator('button[data-meet-date], button[aria-hidden="true"]:disabled');
+    await (await dates.first().elementHandle()).waitForElementState("stable");
+    assert.ok(await element.evaluate((el) => el.isConnected), "Availability must fill the same calendar element");
+    return element.evaluate((el) => {
+      const rect = el.getBoundingClientRect();
+      const cells = el.querySelectorAll('button[data-meet-date], button[aria-hidden="true"]:disabled');
+      const first = cells[0].getBoundingClientRect();
+      return {
+        x: Math.round(rect.x), y: Math.round(rect.y),
+        w: Math.round(rect.width), h: Math.round(rect.height),
+        cellCount: cells.length,
+        cell0: { x: Math.round(first.x), y: Math.round(first.y), w: Math.round(first.width) },
+        seeking: el.getAttribute("aria-busy") === "true",
+      };
+    });
+  }
+  const before = await measure();
+  const response = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/meet/availability");
+  gate.resolve();
+  assert.ok((await response).ok(), "Mock server must return availability");
+  await page.waitForFunction((el) => el.isConnected && !el.hasAttribute("aria-busy"), element);
+  const after = await measure();
 
   results.push({ vp: vp.name, before, after, errors });
   await browser.close();
@@ -111,7 +92,8 @@ for (const { vp, before, after, errors } of results) {
   };
   const cellDx = after.cell0 && before.cell0 ? after.cell0.x - before.cell0.x : null;
   const cellDy = after.cell0 && before.cell0 ? after.cell0.y - before.cell0.y : null;
-  const stable = d.x === 0 && d.y === 0 && d.w === 0 && d.h === 0 && cellDx === 0 && cellDy === 0;
+  const stable = d.x === 0 && d.y === 0 && d.w === 0 && d.h === 0 && cellDx === 0 && cellDy === 0 &&
+    before.cellCount === after.cellCount && before.cell0.w === after.cell0.w;
   if (!stable) failed++;
   console.log(`\n${vp}:`);
   console.log(`  pending  card ${before.w}x${before.h} @ (${before.x},${before.y}) cells=${before.cellCount} seeking=${before.seeking}`);

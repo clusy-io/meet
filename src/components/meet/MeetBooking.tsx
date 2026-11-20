@@ -1,12 +1,12 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import Link from "next/link";
-import { ArrowLeft, Check, Copy, Video } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { CalendarDays, Check, Clock3, Copy, Video } from "lucide-react";
 import { productCta } from "@/lib/meet/cta";
-import type { BookingView, MeetingType } from "@/lib/meet/types";
+import { DEFAULT_VIDEO_CHOICE, type BookingView, type MeetingType, type VideoChoice } from "@/lib/meet/types";
 import { BookingForm } from "@/components/meet/BookingForm";
-import { SelectedSlotSummary } from "@/components/meet/SelectedSlotSummary";
+import { videoProviderLabels } from "./VideoCallChoice";
+import shell from "./MeetShell.module.css";
 import { SlotPicker } from "@/components/meet/SlotPicker";
 import styles from "./BookingDetails.module.css";
 import { SITE } from "@/meet.config";
@@ -16,7 +16,7 @@ import { SITE } from "@/meet.config";
  * All server interaction lives in SlotPicker (availability) and BookingForm
  * (the booking POST); this component only sequences the three steps.
  *
- * Passing `host` turns it into one person's page (/meet/ju): availability and
+ * Passing `host` turns it into a personal page: availability and
  * the booking both carry that slug, so only that calendar decides and only
  * that person is invited. Without it, this is the team page.
  */
@@ -41,16 +41,30 @@ function formatTime(iso: string, timezone: string): string {
   }).format(new Date(iso));
 }
 
-function focusNameWhenVisible(attempts = 0): void {
-  const visibleName = [...document.querySelectorAll<HTMLElement>("[data-meet-name-input]")].find(
-    (element) => element.getClientRects().length > 0
-  );
-  if (visibleName) {
-    visibleName.focus();
+function joinCallLabel(meetingUrl: string): string {
+  try {
+    switch (new URL(meetingUrl).origin) {
+      case "https://meet.google.com":
+        return "Join Google Meet";
+      case "https://teams.microsoft.com":
+      case "https://teams.cloud.microsoft":
+      case "https://teams.live.com":
+        return "Join Microsoft Teams";
+    }
+  } catch {
+    // Older bookings can have a URL without a recognizable origin.
+  }
+  return "Join the video call";
+}
+
+function focusDetailsWhenVisible(selector: string, attempts = 0): void {
+  const target = document.querySelector<HTMLElement>(selector);
+  if (target && target.getClientRects().length > 0) {
+    target.focus();
     return;
   }
   if (attempts < 60) {
-    window.requestAnimationFrame(() => focusNameWhenVisible(attempts + 1));
+    window.requestAnimationFrame(() => focusDetailsWhenVisible(selector, attempts + 1));
   }
 }
 
@@ -60,6 +74,8 @@ export default function MeetBooking({
   blurb,
   meetingType,
   initialDate,
+  durationMinutes,
+  videoProviders,
 }: {
   /** Member key of the personal page; omitted renders the team page. */
   host?: string;
@@ -67,7 +83,9 @@ export default function MeetBooking({
   blurb?: string | null;
   meetingType?: MeetingType;
   initialDate?: string;
-} = {}) {
+  durationMinutes: number;
+  videoProviders: VideoChoice[];
+}) {
   const [step, setStep] = useState<Step>("pick");
   // Owned here, not in SlotPicker, so the Back-to-times step change and the
   // post-409 picker remount preserve the visitor's chosen timezone. The same
@@ -82,9 +100,13 @@ export default function MeetBooking({
   // Bumped to remount SlotPicker, which forces a fresh availability fetch.
   const [pickerKey, setPickerKey] = useState(0);
   const [copied, setCopied] = useState(false);
-  // SlotPicker keeps a mobile and desktop presentation mounted so its stage
-  // transitions stay smooth. Both form presentations use this one lifted
-  // state object, so autofill and typed data survive breakpoint changes.
+  const receiptTitle = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (step === "done") receiptTitle.current?.focus();
+  }, [step]);
+  // The visitor can change the time and keep their details and video choice.
+  const [selectedVideo, setSelectedVideo] = useState<VideoChoice>(DEFAULT_VIDEO_CHOICE);
+  const video = videoProviders.includes(selectedVideo) ? selectedVideo : videoProviders[0];
   const [formName, setFormName] = useState("");
   const [formEmail, setFormEmail] = useState("");
   const [formNotes, setFormNotes] = useState("");
@@ -132,11 +154,12 @@ export default function MeetBooking({
     ]
   );
 
-  const handleSelect = (startIso: string, _timezone: string, durationMinutes: number) => {
+  const handleSelect = (startIso: string, _timezone: string, durationMinutes: number, touchEntry = false) => {
     setSelectedStart(startIso);
     setSelectedDuration(durationMinutes);
     setNotice(null);
-    window.requestAnimationFrame(() => focusNameWhenVisible());
+    const selector = touchEntry ? "[data-meet-details-heading]" : "[data-meet-name-input]";
+    window.requestAnimationFrame(() => focusDetailsWhenVisible(selector));
   };
 
   const handleSlotTaken = () => {
@@ -168,13 +191,13 @@ export default function MeetBooking({
     const manageUrl = `${origin}/manage/${booking.manageToken}`;
     const cta = productCta();
     return (
-      <section aria-live="polite" className="w-full max-w-lg">
+      <section className={styles.receipt}>
         <div className={styles.card}>
           <div className="mb-4 grid h-11 w-11 place-items-center rounded-full bg-accent/10 text-accent">
             <Check size={22} strokeWidth={1.8} aria-hidden />
           </div>
 
-          <h1 className={styles.title}>
+          <h1 ref={receiptTitle} tabIndex={-1} className={styles.title}>
             You&apos;re booked
           </h1>
           <div className={styles.summary}>
@@ -192,12 +215,12 @@ export default function MeetBooking({
                 className={styles.primary}
               >
                 <Video size={16} aria-hidden />
-                Join the video call
+                {joinCallLabel(booking.meetingUrl)}
               </a>
             </p>
           ) : (
             <p className="mt-4 text-sm text-ink-mute">
-              The calendar invite with the video link is on its way to {booking.email}.
+              Check {booking.email} for your confirmation and meeting details.
             </p>
           )}
 
@@ -257,16 +280,18 @@ export default function MeetBooking({
 
   const formSlot = selectedStart && selectedDuration !== null ? (
     <div>
-      <h2 className="font-serif-display text-2xl text-ink">Your details</h2>
-      <div className="mt-2 hidden lg:block">
-        <SelectedSlotSummary start={selectedStart} durationMinutes={selectedDuration} timezone={timezone} />
-      </div>
-      <div className="mt-4 border-t border-hairline pt-4">
+      <h2 data-meet-details-heading tabIndex={-1} className="font-serif-display text-2xl tracking-tight text-ink">
+        Your details
+      </h2>
+      <div className="mt-5">
         <BookingForm
           startIso={selectedStart}
           timezone={timezone}
           meetingType={meetingType}
           state={bookingFormState}
+          videoProviders={videoProviders}
+          video={video}
+          onVideoChange={setSelectedVideo}
           onDone={handleDone}
           onSlotTaken={handleSlotTaken}
           host={host}
@@ -275,26 +300,24 @@ export default function MeetBooking({
     </div>
   ) : null;
 
+  const renderEventHeader = (timezoneSelector: ReactNode) => (
+    <header className={shell.calendarEvent}>
+      <h1 className={shell.calendarTitle}>{headline ?? SITE.bookingTitle}</h1>
+      {blurb && <p className={shell.calendarBlurb}>{blurb}</p>}
+      <div className={shell.calendarMeta}>
+        <span><Clock3 size={15} aria-hidden />{durationMinutes} min</span>
+        {video ? (
+          <span><Video size={16} aria-hidden />{videoProviderLabels[video]}</span>
+        ) : (
+          <span><CalendarDays size={16} aria-hidden />Calendar invitation</span>
+        )}
+        {timezoneSelector}
+      </div>
+    </header>
+  );
+
   return (
     <section className="w-full max-w-5xl">
-      <div className="mx-auto max-w-2xl text-center">
-        {!host && (
-          <Link
-            href="/"
-            className="mb-2 inline-flex min-h-11 items-center gap-1.5 rounded-lg px-2 text-sm font-medium text-ink-mute transition-colors hover:text-accent focus-visible:outline-2 focus-visible:outline-accent"
-          >
-            <ArrowLeft size={15} aria-hidden />
-            Meeting types
-          </Link>
-        )}
-        <h1 className="font-serif-display text-[clamp(2rem,5vw,3.25rem)] leading-tight tracking-tight text-balance text-ink">
-          {headline ?? SITE.bookingTitle}
-        </h1>
-        {blurb && (
-          <p className="mx-auto mt-3 max-w-[52ch] text-sm leading-relaxed text-pretty text-ink-mute sm:text-base">{blurb}</p>
-        )}
-      </div>
-
       {notice ? (
         <p
           role="status"
@@ -305,24 +328,23 @@ export default function MeetBooking({
         </p>
       ) : null}
 
-      <div className="mt-6">
-        <SlotPicker
-          key={pickerKey}
-          host={host}
-          meetingType={meetingType}
-          initialDate={initialDate}
-          selecting={formPending}
-          onSelect={handleSelect}
-          timezone={timezone}
-          onTimezoneChange={setTimezone}
-          selectedSlot={selectedStart}
-          formSlot={formSlot}
-          onClearSlot={() => {
-            setSelectedStart(null);
-            setSelectedDuration(null);
-          }}
-        />
-      </div>
+      <SlotPicker
+        key={pickerKey}
+        renderEventHeader={renderEventHeader}
+        host={host}
+        meetingType={meetingType}
+        initialDate={initialDate}
+        selecting={formPending}
+        onSelect={handleSelect}
+        timezone={timezone}
+        onTimezoneChange={setTimezone}
+        selectedSlot={selectedStart}
+        formSlot={formSlot}
+        onClearSlot={() => {
+          setSelectedStart(null);
+          setSelectedDuration(null);
+        }}
+      />
     </section>
   );
 }
