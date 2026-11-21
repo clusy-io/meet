@@ -300,19 +300,22 @@ export default function MeetBooking({
     </div>
   ) : null;
 
-  const duration = <span><Clock3 size={15} aria-hidden />{durationMinutes} min</span>;
+  const meetingInfo = (
+    <>
+      <span><Clock3 size={15} aria-hidden />{durationMinutes} min</span>
+      {video ? (
+        <span><Video size={16} aria-hidden />{videoProviderLabels[video]}</span>
+      ) : (
+        <span><CalendarDays size={16} aria-hidden />Calendar invitation</span>
+      )}
+    </>
+  );
   const renderEventHeader = (timezoneSelector: ReactNode) => (
-    <header className={shell.calendarEvent}>
+    <header className={shell.calendarEvent} data-personal={host ? true : undefined}>
       <h1 className={shell.calendarTitle}>{headline ?? SITE.bookingTitle}</h1>
       {blurb && <p className={shell.calendarBlurb}>{blurb}</p>}
-      {host && <div className={shell.personalDuration}>{duration}</div>}
       <div className={shell.calendarMeta}>
-        {!host && duration}
-        {video ? (
-          <span><Video size={16} aria-hidden />{videoProviderLabels[video]}</span>
-        ) : (
-          <span><CalendarDays size={16} aria-hidden />Calendar invitation</span>
-        )}
+        {host ? <div className={shell.durationProvider}>{meetingInfo}</div> : meetingInfo}
         {timezoneSelector}
       </div>
     </header>
