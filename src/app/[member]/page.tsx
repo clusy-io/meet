@@ -54,7 +54,7 @@ export default async function MemberBookingPage({ params }: RouteParams) {
 
   const videoProviders = await availableVideoProviders({ host: page.member.key });
   return (
-    <MeetShell calendar prime={<AvailabilityPrime host={page.member.key} />}>
+    <MeetShell calendar="personal" prime={<AvailabilityPrime host={page.member.key} />}>
       <MeetBooking
         host={page.member.key}
         headline={`Book a call with ${page.headline}`}

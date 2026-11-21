@@ -300,12 +300,14 @@ export default function MeetBooking({
     </div>
   ) : null;
 
+  const duration = <span><Clock3 size={15} aria-hidden />{durationMinutes} min</span>;
   const renderEventHeader = (timezoneSelector: ReactNode) => (
     <header className={shell.calendarEvent}>
       <h1 className={shell.calendarTitle}>{headline ?? SITE.bookingTitle}</h1>
       {blurb && <p className={shell.calendarBlurb}>{blurb}</p>}
+      {host && <div className={shell.personalDuration}>{duration}</div>}
       <div className={shell.calendarMeta}>
-        <span><Clock3 size={15} aria-hidden />{durationMinutes} min</span>
+        {!host && duration}
         {video ? (
           <span><Video size={16} aria-hidden />{videoProviderLabels[video]}</span>
         ) : (
