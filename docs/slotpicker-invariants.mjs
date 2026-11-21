@@ -126,6 +126,76 @@ function measureColumn(chip) {
   };
 }
 
+// The middle of the page may scroll or animate. Sample the footer on every
+// frame so a jump that settles before the next click is still detected.
+async function checkFooter(size, reducedMotion) {
+  const { page, errors } = await openBooking({ viewport: size, reducedMotion });
+  const footer = page.locator("footer:visible");
+  await page.evaluate(() => document.fonts.ready);
+  const trace = await footer.evaluateHandle((element) => {
+    const first = element.getBoundingClientRect();
+    const tops = { start: first.top, min: first.top, max: first.top, bottom: first.bottom };
+    function sample() {
+      const top = element.getBoundingClientRect().top;
+      tops.min = Math.min(tops.min, top);
+      tops.max = Math.max(tops.max, top);
+      requestAnimationFrame(sample);
+    }
+    sample();
+    return tops;
+  });
+
+  async function reveal(control) {
+    await control.scrollIntoViewIfNeeded();
+    return control.evaluate((button) => {
+      const box = button.getBoundingClientRect();
+      const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
+      const footerTop = document.querySelector("footer").getBoundingClientRect().top;
+      if (box.top < -1 || box.bottom > footerTop + 1 || !button.contains(hit)) {
+        throw new Error(`${button.textContent.trim()} is clipped or covered: top ${box.top}, bottom ${box.bottom}, footer ${footerTop}`);
+      }
+      for (let node = button.parentElement; node; node = node.parentElement) {
+        if (node.scrollTop > 0) return true;
+      }
+      return false;
+    });
+  }
+
+  try {
+    await page.getByRole("button", { name: dateLabel(firstDay), exact: false }).click();
+    const last = page.locator(`[data-meet-time="${firstSlots.at(-1)}"]`);
+    await last.waitFor();
+    const timesScrolled = await reveal(last);
+    await last.click();
+
+    const confirm = page.getByRole("button", { name: "Confirm booking", exact: true });
+    await confirm.waitFor();
+    await page.locator("form details > summary").click();
+    const formScrolled = await reveal(confirm);
+    if (size.height < 700) {
+      assert.ok(timesScrolled && formScrolled, "The short viewport must exercise scrolling in both stages");
+    }
+    await page.getByRole("button", { name: "Change time", exact: true }).click();
+    await last.waitFor();
+    await (await last.elementHandle()).waitForElementState("stable");
+    const changeDate = page.getByRole("button", { name: "Change date", exact: true });
+    if (await changeDate.isVisible()) {
+      await changeDate.click();
+      await page.getByRole("button", { name: dateLabel(firstDay), exact: false }).waitFor();
+    }
+
+    const { start, min, max, bottom } = await trace.jsonValue();
+    assert.ok(start >= 0 && start < bottom && bottom <= size.height + 1,
+      `The footer should be entirely visible at ${size.width}×${size.height}: ${start} to ${bottom}`);
+    assert.ok(start - min <= 1 && max - start <= 1,
+      `Footer moved at ${size.width}×${size.height}: initial ${start}, range ${min} to ${max}`);
+    assert.deepEqual(errors, [], "Footer check emitted browser errors");
+    console.log(`PASS  Footer holds at ${start}px across booking steps at ${size.width}×${size.height}`);
+  } finally {
+    await page.close();
+  }
+}
+
 try {
   const { page, errors } = await openBooking();
   const calendar = page.locator("[data-meet-calendar]:visible");
@@ -283,6 +353,10 @@ try {
   await reduced.page.locator("[data-meet-time]:visible").first().waitFor();
   assert.deepEqual(reduced.errors, [], "Reduced-motion hydration or interaction emitted browser errors");
   console.log("PASS  Both motion preferences hydrate and run without browser errors");
+
+  await checkFooter({ width: 1920, height: 962 }, "no-preference");
+  await checkFooter({ width: 1280, height: 640 }, "no-preference");
+  await checkFooter({ width: 390, height: 844 }, "reduce");
 } finally {
   await browser.close();
 }

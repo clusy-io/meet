@@ -5,6 +5,21 @@
   background: var(--paper);
   color: hsl(var(--ink));
 }
+/* Booking steps share a scroll area so changing its contents keeps the footer
+   at the bottom of the viewport. The masthead scrolls away on short screens. */
+.shell[data-calendar] {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+}
+
+.calendarScroll {
+  overflow-y: auto;
+  scrollbar-gutter: stable both-edges;
+}
+
 .masthead {
   width: min(100% - 48px, 1088px);
   margin-inline: auto;
@@ -110,7 +125,7 @@
   justify-content: center;
   width: min(100% - 48px, 1024px);
   margin-inline: auto;
-  padding-block: clamp(1.75rem, 5vh, 3.75rem) 3rem;
+  padding-block: clamp(1.75rem, 5vh, 3.75rem) 1.5rem;
 }
 .calendarEvent {
   min-width: 0;
