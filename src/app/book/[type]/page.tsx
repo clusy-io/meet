@@ -42,7 +42,7 @@ export default async function TeamBookingPage(props: RouteProps) {
   const videoProviders = await availableVideoProviders({ meetingType: option.key });
   const title = option.key === "investor" ? "Investor meeting" : option.label;
   return (
-    <MeetShell calendar prime={<AvailabilityPrime meetingType={option.key} />}>
+    <MeetShell calendar="team" prime={<AvailabilityPrime meetingType={option.key} />}>
       <MeetBooking
         key={option.key}
         headline={`${title} with ${SITE.name}`}

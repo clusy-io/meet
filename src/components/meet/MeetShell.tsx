@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import SiteFooter from "@/components/SiteFooter";
 import ThemeToggle from "@/components/ThemeToggle";
 import { SITE } from "@/meet.config";
@@ -11,12 +11,12 @@ export default function MeetShell({
   children,
   prime,
   homeHref = SITE.homepage,
-  calendar = false,
+  calendar,
 }: {
   children: ReactNode;
   prime?: ReactNode;
   homeHref?: string;
-  calendar?: boolean;
+  calendar?: "team" | "personal";
 }) {
   const masthead = (
     <header className={styles.masthead}>
@@ -31,18 +31,18 @@ export default function MeetShell({
         />
       </Link>
       <div className={styles.calendarNav}>
-        {calendar && (
+        <ThemeToggle className="border border-hairline" />
+        {calendar === "team" && (
           <Link href="/" className={styles.calendarBack}>
-            <ArrowLeft size={15} aria-hidden />
             Meeting types
+            <ArrowRight size={15} aria-hidden />
           </Link>
         )}
-        <ThemeToggle className="border border-hairline" />
       </div>
     </header>
   );
   return (
-    <main className={styles.shell} data-calendar={calendar || undefined}>
+    <main className={styles.shell} data-calendar={calendar ? true : undefined}>
       {prime}
       {calendar ? (
         <div className={styles.calendarScroll}>
