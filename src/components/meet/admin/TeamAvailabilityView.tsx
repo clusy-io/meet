@@ -479,7 +479,7 @@ export function TeamAvailabilityView({
         <LookBusyControl
           level={data.lookBusy ?? null}
           title="Make the team page look busy"
-          description="Automatically hide some open times on the team page to keep the team calendar looking busy. As meetings are booked, hidden times become available."
+          description="Choose how many open times visitors can see each day on team booking pages."
           onSaved={(lookBusy) =>
             setData((current) => (current ? { ...current, lookBusy } : current))
           }
@@ -728,7 +728,7 @@ function DayTimeline({
                     {response.lookBusy && (
                       <p
                         className="text-[10px] text-ink-faint"
-                        title="The team page looks busy: visitors see some of these openings as taken until the day fills."
+                        title="The daily limit applies to the team booking page."
                       >
                         Looks busy to visitors
                       </p>

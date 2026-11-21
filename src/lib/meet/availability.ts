@@ -236,13 +236,11 @@ function teamCandidates(
   days: number,
   range?: { fromMs: number; toMs: number; meetingEndLimit: number },
 ) {
-  const gridFrom = range ? addCivilDays(from.year, from.month, from.day, -MEMBER_GRID_CIVIL_PADDING_DAYS) : from;
-  const gridDays = range ? days + 2 * MEMBER_GRID_CIVIL_PADDING_DAYS : days;
   const byStart = new Map<number, SlotCandidate>();
   const memberSlotSets = new Map<string, ReadonlySet<number>>();
   for (const [key, config] of windows) {
     const starts = new Set<number>();
-    for (const candidate of candidateSlotsInRange(config, gridFrom, gridDays)) {
+    for (const candidate of candidateSlotsInRange(config, from, days)) {
       if (range && (candidate.startMs < range.fromMs || candidate.startMs >= range.toMs ||
         candidate.endMs > range.meetingEndLimit)) continue;
       starts.add(candidate.startMs);
@@ -539,7 +537,7 @@ export interface LookBusyPlan {
   level: LookBusyLevel;
   /** Page grid starts from midnight today (page zone) to the horizon edge. */
   grid: number[];
-  /** Grid starts real calendars and bookings leave open, notice aside. */
+  /** Grid starts currently eligible for booking before Look Busy is applied. */
   open: Set<number>;
   hidden: Set<number>;
   /** The earliest start bookable right now. */
@@ -570,17 +568,13 @@ export async function computeAvailabilityPlan(
   };
   const period = meetingType === "investor" ? investorWindow(config) : undefined;
   const investor = period && config.investor ? { ...period, requiredMember: config.investor.requiredMember } : undefined;
-  let requestedRange: { fromMs: number; toMs: number; meetingEndLimit: number } | undefined;
-  if (investor) {
-    const after = addCivilDays(fromCivil.year, fromCivil.month, fromCivil.day, days);
-    requestedRange = {
-      meetingEndLimit: investor.toMs,
-      fromMs: Math.max(investor.fromMs, wallToUtcMs(config.hostTimezone, fromCivil.year, fromCivil.month, fromCivil.day, 0, 0)),
-      toMs: Math.min(investor.toMs, wallToUtcMs(config.hostTimezone, after.year, after.month, after.day, 0, 0)),
-    };
-    if (!options.lookBusy && (Date.now() >= investor.toMs || requestedRange.fromMs >= requestedRange.toMs)) {
-      return { response: { ...metadata, slots: [] }, lookBusy: null };
-    }
+  const end = addCivilDays(fromCivil.year, fromCivil.month, fromCivil.day, days);
+  const requestedStart = wallToUtcMs(config.hostTimezone, fromCivil.year, fromCivil.month, fromCivil.day, 0, 0);
+  const requestedEnd = wallToUtcMs(config.hostTimezone, end.year, end.month, end.day, 0, 0);
+  const firstStartMs = Math.max(investor?.fromMs ?? -Infinity, requestedStart);
+  const afterLastStartMs = Math.min(investor?.toMs ?? Infinity, requestedEnd);
+  if (investor && !options.lookBusy && (Date.now() >= investor.toMs || firstStartMs >= afterLastStartMs)) {
+    return { response: { ...metadata, slots: [] }, lookBusy: null };
   }
   if (config.mockMode) await ensureMockReady();
 
@@ -597,6 +591,16 @@ export async function computeAvailabilityPlan(
       : hostKey === undefined
         ? team.lookBusy
         : (config.lookBusy ?? null);
+  // Complete each host-local day before ranking. A member's window or
+  // overnight shift may begin on the other side of a requested date.
+  const clipDates = !!(investor || lookBusyLevel);
+  const gridFrom = clipDates
+    ? addCivilDays(fromCivil.year, fromCivil.month, fromCivil.day, -MEMBER_GRID_CIVIL_PADDING_DAYS)
+    : fromCivil;
+  const gridDays = clipDates ? days + 2 * MEMBER_GRID_CIVIL_PADDING_DAYS : days;
+  const requestedRange = clipDates
+    ? { fromMs: firstStartMs, toMs: afterLastStartMs, meetingEndLimit: investor?.toMs ?? Infinity }
+    : undefined;
   const canonicalConfigs = [...memberWindows.values(), config];
   const { key: cacheKey, fromMs: windowFromMs, toMs: canonicalToMs } =
     investor
@@ -677,10 +681,16 @@ export async function computeAvailabilityPlan(
   let memberSlotSets: Map<string, ReadonlySet<number>> | undefined;
   let overhangMin = overnightOverhangMin(config);
   if (hostKey === undefined) {
-    ({ candidates, memberSlotSets } = teamCandidates(memberWindows, fromCivil, days, requestedRange));
+    ({ candidates, memberSlotSets } = teamCandidates(memberWindows, gridFrom, gridDays, requestedRange));
     overhangMin = widestOverhangMin([config, ...memberWindows.values()]);
   } else {
-    candidates = candidateSlotsInRange(config, fromCivil, days);
+    // A skipped DST hour can map two wall-clock labels to the same instant.
+    const byStart = new Map<number, SlotCandidate>();
+    for (const candidate of candidateSlotsInRange(config, gridFrom, gridDays)) {
+      if (requestedRange && (candidate.startMs < requestedRange.fromMs || candidate.startMs >= requestedRange.toMs)) continue;
+      byStart.set(candidate.startMs, candidate);
+    }
+    candidates = [...byStart.values()].sort((a, b) => a.startMs - b.startMs);
   }
   const slotNowMs = Date.now();
   let slots = availableSlots(
@@ -696,33 +706,11 @@ export async function computeAvailabilityPlan(
 
   let lookBusyPlan: LookBusyPlan | null = null;
   if (lookBusyLevel) {
-    // "Make my calendar look busy". Judged on the page's own slots, before
-    // the reschedule narrowing below, so a booker moving a call sees the same
-    // page everyone else does.
-    //
-    // The hiding is decided over whole days from midnight today, minimum
-    // notice aside: it must move only with real events and bookings, never
-    // with the clock, or a time a visitor saw at 9:00 could vanish by noon.
-    // The provider fetch and the bookings read already start at that
-    // midnight (canonicalWindow), so the morning that has passed is real data.
+    // Rank genuine openings before narrowing a reschedule to its attendees.
     const today = utcToWall(config.hostTimezone, slotNowMs);
     const midnightMs = wallToUtcMs(config.hostTimezone, today.year, today.month, today.day, 0, 0);
-    // The edge the read below applies, from the same instant, so the grid and
-    // the open set always cover the same days. Slots past the real edge are
-    // already gone from `slots`.
-    const horizonMs = investor?.toMs ?? horizonEdgeMs(config, midnightMs, overhangMin);
-    const open = new Set(
-      availableSlots(
-        { ...config, minNoticeMinutes: 0 },
-        candidates,
-        busyMap,
-        midnightMs,
-        quorum,
-        memberSlotSets,
-        overhangMin,
-        investor,
-      ).map((slot) => slot.startMs)
-    );
+    const horizonMs = investor?.toMs ?? horizonEdgeMs(config, slotNowMs, overhangMin);
+    const open = new Set(slots.map((slot) => slot.startMs));
     const grid = candidates
       .map((candidate) => candidate.startMs)
       .filter((startMs) => startMs >= midnightMs && startMs < horizonMs);
@@ -730,12 +718,9 @@ export async function computeAvailabilityPlan(
     const hidden = lookBusyHiddenStarts({
       grid,
       open,
-      durationMinutes: config.durationMinutes,
-      slotStepMinutes: config.slotStepMinutes,
       zone: config.hostTimezone,
       key: lookBusyKey(hostKey ?? TEAM_PAGE_KEY, config.tokenSecret),
       level: lookBusyLevel,
-      nowMs: slotNowMs,
       bookableFromMs,
     });
     if (hidden.size > 0) slots = slots.filter((slot) => !hidden.has(slot.startMs));

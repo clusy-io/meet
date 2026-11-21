@@ -271,7 +271,7 @@ export function LookBusyControl({
                 <div className="flex flex-col gap-3 border-b border-hairline p-3 sm:flex-row sm:items-center sm:justify-between sm:p-4">
                   <div className="min-w-0">
                     <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-ink-faint">
-                      How busy
+                      Daily limit
                     </p>
                     <p className="mt-1 text-xs text-ink-mute">
                       {LOOK_BUSY_LEVEL_INFO[selected].detail}
@@ -279,7 +279,7 @@ export function LookBusyControl({
                   </div>
                   <div
                     role="radiogroup"
-                    aria-label="How busy the page should look"
+                    aria-label="Daily opening limit"
                     className="inline-flex shrink-0 self-start rounded-lg border border-hairline bg-paper-raise p-0.5 sm:self-auto"
                   >
                     {LOOK_BUSY_LEVELS.map((key) => {
@@ -516,7 +516,7 @@ function LookBusyPreviewPanel({
       <p className="mt-3 border-t border-hairline pt-3 text-xs leading-5 text-ink-mute">
         {next.hidden === 0 ? (
           <>
-            These days are already busy enough, so nothing is hidden.{" "}
+            Visitors can see every opening on these days.{" "}
           </>
         ) : (
           <>
@@ -526,7 +526,7 @@ function LookBusyPreviewPanel({
           </>
         )}
         Across the booking window, {horizon.hidden} of {horizon.visible + horizon.hidden} free times
-        are held back. Each new booking brings one back, and no day is cut below two open times.
+        are held back. Days with fewer openings than the daily limit show every available time.
       </p>
     </div>
   );

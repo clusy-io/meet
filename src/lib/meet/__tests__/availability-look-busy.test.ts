@@ -76,8 +76,6 @@ import {
   invalidateAvailabilityCache,
   type AvailabilityOptions,
 } from "@/lib/meet/availability";
-import { lookBusyKey } from "@/lib/meet/lookBusy";
-import { lookBusyShare } from "@/lib/meet/lookBusyLevels";
 
 const MIN = 60_000;
 /** Monday 2026-08-17, 08:00 UTC: before the first 09:00 slot. */
@@ -149,13 +147,6 @@ function onDay(list: string[], date: string): string[] {
   return list.filter((slot) => slot.startsWith(date));
 }
 
-/** How many of a 16-slot empty day the level hides for this page. */
-function expectedHidden(pageKey: string, level: LookBusyLevel, date: string): number {
-  const daysAhead = (at(`${date}T00:00:00Z`) - at("2026-08-17T00:00:00Z")) / (24 * 60 * MIN);
-  const wobble = lookBusyKey(pageKey, "test-secret").day(date);
-  return Math.min(14, Math.floor(lookBusyShare(level, daysAhead, wobble) * 16));
-}
-
 const personal = (lookBusy: LookBusyLevel | null): AvailabilityOptions => ({
   hostKey: "one",
   config: { ...mocks.config, quorum: 1, lookBusy },
@@ -182,26 +173,55 @@ describe("the team page looking busy", () => {
     expect(await slots()).toHaveLength(5 * 16);
   });
 
-  it("hides each empty day down to its level's look, busiest first", async () => {
+  it.each([
+    ["light", 5], ["balanced", 4], ["packed", 3],
+  ] as const)("shows %s days with at most %i real choices, repeatably", async (level, limit) => {
     const all = await slots();
-    teamLooksBusy("balanced");
+    teamLooksBusy(level);
     const shown = await slots();
     for (const date of WEEK) {
-      expect(onDay(shown, date)).toHaveLength(16 - expectedHidden("", "balanced", date));
+      const daily = onDay(shown, date);
+      expect(daily).toHaveLength(limit);
+      expect(new Set(daily).size).toBe(limit);
     }
-    // Monday looks busier than Friday, the way a real week fills.
-    expect(onDay(shown, WEEK[0]).length).toBeLessThan(onDay(shown, WEEK[4]).length);
-    // Only ever a subset, and the same on the next request.
     expect(shown.every((slot) => all.includes(slot))).toBe(true);
     expect(await slots()).toEqual(shown);
   });
 
-  it("hides more at Packed than at Light", async () => {
-    teamLooksBusy("light");
-    const light = await slots();
-    teamLooksBusy("packed");
-    const packed = await slots();
-    expect(packed.length).toBeLessThan(light.length);
+  it("varies the mix of openings across the week and offers morning and afternoon times", async () => {
+    teamLooksBusy("balanced");
+    const shown = await slots();
+    const clocks = shown.map((iso) => iso.slice(11, 16));
+    expect(clocks.some((clock) => clock >= "09:30" && clock <= "10:30")).toBe(true);
+    expect(clocks.some((clock) => clock >= "14:00" && clock <= "15:00")).toBe(true);
+    const dailyPatterns = WEEK.map((date) => onDay(shown, date).map((iso) => iso.slice(11, 16)).join(","));
+    expect(new Set(dailyPatterns).size).toBeGreaterThan(1);
+    // A shorter query should show the same day as the full booking window.
+    const single = await computeAvailability(WEEK[2], 1);
+    expect(single.slots).toEqual(onDay(shown, WEEK[2]));
+  });
+
+  it.each([
+    { schedule: "sparse", tokyoEnd: 19 * 60, laStart: 16 * 60 + 30, laEnd: 17 * 60 + 30 },
+    { schedule: "wide", tokyoEnd: 23 * 60, laStart: 16 * 60, laEnd: 22 * 60 },
+  ])("keeps the same host day across $schedule overseas windows", async ({ tokyoEnd, laStart, laEnd }) => {
+    // An LA opening from the previous local evening falls after midnight UTC.
+    mocks.settings = [
+      row("", "balanced"),
+      { ...row("one", null), timezone: "Asia/Tokyo", windowStartMin: 18 * 60, windowEndMin: tokyoEnd },
+      { ...row("two", null), timezone: "America/Los_Angeles", windowStartMin: laStart, windowEndMin: laEnd },
+    ];
+    const date = WEEK[2];
+    const team = { config: { ...mocks.config, quorum: 1 } };
+    const week = onDay(await slots(team), date);
+    expect(week).toHaveLength(4);
+    const single = await computeAvailability(date, 1, team);
+    expect(onDay(single.slots, date)).toEqual(week);
+  });
+
+  it("shows the same starts for a team chat and meeting when their actual grids match", async () => {
+    teamLooksBusy("balanced");
+    expect(await slots({ meetingType: "chat" })).toEqual(await slots());
   });
 
   it("hides nothing on a day real meetings already make busy", async () => {
@@ -226,27 +246,21 @@ describe("the team page looking busy", () => {
     expect(before.filter((slot) => slot !== before[3]).every((slot) => after.includes(slot))).toBe(true);
   });
 
-  it("does not move hidden times as the day goes on", async () => {
+  it("keeps future choices and replaces expired ones as the minimum notice advances", async () => {
     teamLooksBusy("balanced");
     mocks.config.minNoticeMinutes = 60;
-    const morning = onDay(await slots(), WEEK[0]);
-
-    // Two hours later the early morning has gone; the rest looks the same.
-    vi.setSystemTime(at("2026-08-17T10:00:00Z"));
-    const later = onDay(await slots(), WEEK[0]);
-    const stillAhead = morning.filter((slot) => at(slot) >= at("2026-08-17T11:00:00Z"));
-    expect(stillAhead.length).toBeGreaterThanOrEqual(2);
-    expect(later).toEqual(stillAhead);
-  });
-
-  it("keeps two times open as today runs out, though it hid them earlier", async () => {
-    teamLooksBusy("packed");
-    mocks.config.minNoticeMinutes = 60;
-    for (const hour of ["12", "13", "14", "15"]) {
-      vi.setSystemTime(at(`2026-08-17T${hour}:00:00Z`));
-      const left = onDay(await slots(), WEEK[0]);
-      const bookable = 16 - (Number(hour) + 1 - 9) * 2;
-      expect(left.length).toBeGreaterThanOrEqual(Math.min(2, bookable));
+    let previous = onDay(await slots(), WEEK[0]);
+    for (const hour of [10, 12, 14, 15, 16]) {
+      const now = at(`2026-08-17T${hour}:00:00Z`);
+      vi.setSystemTime(now);
+      const earliest = now + 60 * MIN;
+      const stillBookable = previous.filter((iso) => at(iso) >= earliest);
+      const actualCount = Math.max(0, (17 - hour - 1) * 2);
+      const shown = onDay(await slots(), WEEK[0]);
+      expect(shown).toHaveLength(Math.min(4, actualCount));
+      expect(shown).toEqual(expect.arrayContaining(stillBookable));
+      expect(shown.every((iso) => at(iso) >= earliest)).toBe(true);
+      previous = shown;
     }
   });
 
@@ -281,11 +295,58 @@ describe("the team page looking busy", () => {
 });
 
 describe("a personal page looking busy", () => {
-  it("follows the page's own level", async () => {
-    const shown = await slots(personal("balanced"));
-    for (const date of WEEK) {
-      expect(onDay(shown, date)).toHaveLength(16 - expectedHidden("one", "balanced", date));
-    }
+  it("counts distinct real starts on a personal page when the clock skips an hour", async () => {
+    vi.setSystemTime("2027-03-13T20:00:00Z");
+    const date = "2027-03-14";
+    const options = {
+      hostKey: "one",
+      config: {
+        ...mocks.config,
+        quorum: 1,
+        hostTimezone: "America/Los_Angeles",
+        bookableWeekdays: [7],
+        windowStartMin: 0,
+        windowEndMin: 4 * 60,
+        lookBusy: "balanced" as const,
+      },
+    };
+    // Midnight–4am spans three elapsed hours when LA jumps from 1:59 to 3am.
+    const real = ["08:00", "08:30", "09:00", "09:30", "10:00", "10:30"]
+      .map((utc) => `${date}T${utc}:00.000Z`);
+    const { response, lookBusy } = await computeAvailabilityPlan(date, 1, options);
+    expect(lookBusy?.grid).toEqual(real.map(at));
+    expect(response.slots).toHaveLength(4);
+    expect(response.slots).toEqual([...new Set(response.slots)].sort());
+    expect(response.slots.every((iso) => real.includes(iso))).toBe(true);
+
+    // With just four actual openings, the duplicate local-hour candidates
+    // must neither consume one of the choices nor appear twice in the result.
+    mocks.busy.set("one", [{ startMs: at(real[0]), endMs: at(real[2]) }]);
+    invalidateAvailabilityCache();
+    expect((await computeAvailability(date, 1, options)).slots).toEqual(real.slice(2));
+  });
+
+  it("chooses times in the personal page's local zone, independently of the team's zone", async () => {
+    const options = personal("balanced");
+    const shown = await slots({
+      ...options,
+      config: { ...options.config!, hostTimezone: "America/Los_Angeles" },
+    });
+    // The test window is 9am–5pm Pacific and stays within the same UTC date.
+    for (const date of WEEK) expect(onDay(shown, date)).toHaveLength(4);
+    const clocks = shown.map((iso) => iso.slice(11, 16));
+    expect(clocks.every((utc) => utc >= "16:00" && utc <= "23:30")).toBe(true);
+    expect(clocks.some((utc) => utc >= "16:30" && utc <= "17:30")).toBe(true);
+    expect(clocks.some((utc) => utc >= "21:00" && utc <= "22:00")).toBe(true);
+  });
+
+  it("shows every real opening when a personal meeting only offers two starts", async () => {
+    const page = personal("packed");
+    const window = { ...page.config!, windowStartMin: 9 * 60, windowEndMin: 10 * 60 };
+    const shown = await slots({ ...page, config: window });
+    const unfiltered = await slots({ ...page, config: { ...window, lookBusy: null } });
+    expect(onDay(shown, WEEK[2])).toHaveLength(2);
+    expect(shown).toEqual(unfiltered);
   });
 
   it("is not switched on by the team page, nor switches it on", async () => {
@@ -321,6 +382,7 @@ describe("the admin preview", () => {
     expect(plan.lookBusy?.level).toBe("packed");
     expect(plan.lookBusy?.hidden.size).toBeGreaterThan(0);
     // The plan explains the public answer exactly.
+    expect(plan.response.slots).toEqual(await slots(personal("packed")));
     const shown = new Set(plan.response.slots.map((slot) => at(slot)));
     for (const start of plan.lookBusy?.hidden ?? []) expect(shown.has(start)).toBe(false);
     for (const start of plan.lookBusy?.open ?? []) {

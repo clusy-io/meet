@@ -36,10 +36,8 @@ calendar-free and inside their local window.
 **A page per person**, alongside the team page. `/<member key>` books that one
 person against their own calendar, with quorum set aside.
 
-**Make my calendar look busy.** Hide some open times so a page never looks
-empty, and give them back as real meetings are booked. Hidden times look like a
-busy person's calendar rather than random holes, stay the same on every
-refresh, and can be previewed live from the admin console before switching on.
+**Make my calendar look busy.** Show up to five, four or three available times
+per day. Preview the choices on your real calendar before turning it on.
 
 **A complete booking lifecycle**: confirmations with ICS attachments, guest
 invites, self-service reschedule and cancel, and 24-hour and 1-hour reminders.
@@ -131,33 +129,20 @@ no route of its own.
 
 ## Make my calendar look busy
 
-A booking page that offers every hour of every day reads as a calendar nobody
-books. Each person can switch on **Make my calendar look busy** for their own
-page, and the team page has its own switch: *automatically hide some open
-times to keep your calendar looking busy; as meetings are booked, hidden times
-become available.*
+Choose a daily limit for the number of times visitors see on a booking page.
+Light shows up to five, Balanced up to four, and Packed up to three. If only
+two times are available, every level shows both.
 
-- **Real meetings count first.** A level (Light, Balanced or Packed) says how
-  booked a day should look, and only the shortfall is hidden. Each booking
-  gives a hidden time back, and a day that is already that busy hides nothing.
-- **Nearer days look busier.** Light targets about 55% booked today and 30%
-  several weeks out. Balanced targets 75% and 50%, and Packed targets 90%
-  and 65%. The target varies slightly by day. Hidden times are 30-, 60- or
-  90-minute blocks that land mostly mid-morning and mid-afternoon.
-- **The same on every refresh.** Every choice is an HMAC of the page and the
-  slot keyed from `MEET_TOKEN_SECRET`, so every server instance hides the same
-  times, nothing moves with the clock during the day, and nobody can work out
-  from this source which taken times are real.
-- **It never costs a booking.** A day keeps at least two of the times it can
-  still be booked at, and booking a hidden time through the API still works,
-  because the host really is free.
-- **See it before you switch it on.** The admin console draws the next five
-  bookable days exactly as visitors will see them, from the page's real
-  calendars, at any level. The public availability API never carries hidden
-  times; only this authenticated preview names them.
+When a day has more openings than its limit, the page samples from the times
+visitors can actually book. Mid-morning and mid-afternoon are slightly more
+likely to appear. The random selection is seeded for each page and local
+date, so visitors see the same choices on refresh while availability stays
+the same. A time already selected can still be booked or rescheduled into
+as long as the host is free.
 
-The switch is in each person's Availability section in `/admin`, and the team
-page's is on the Availability tab. Both save instantly.
+In `/admin`, open a person's Availability section for their booking page, or
+the Availability tab for team meetings and chats. Preview the next five
+bookable days at any level before you switch it on. Changes save immediately.
 
 ---
 
@@ -332,8 +317,7 @@ npm run check
 ```
 
 The suite covers timezone maths, intervals, slot generation, "look busy"
-hiding (the month's shape, meeting-shaped blocks, give-back on booking,
-refresh stability), configuration,
+daily limits, sampling of bookable times, refresh stability, configuration,
 encryption, storage concurrency, per-page slot isolation, admin availability
 authentication and cross-timezone timeline maths, request origin checks, email
 routing, reminders, Slack payloads and delivery classification, Microsoft

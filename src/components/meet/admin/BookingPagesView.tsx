@@ -2753,7 +2753,7 @@ function BookingPageEditor({
                     host={page.memberKey}
                     level={page.lookBusy}
                     title="Make my calendar look busy"
-                    description="Automatically hide some open times to keep your calendar looking busy. As meetings are booked, hidden times become available."
+                    description="Choose how many open times visitors can see each day."
                     onSaved={(lookBusy) => onPagePatch(page.memberKey, { lookBusy })}
                     onUnauthorized={onUnauthorized}
                   />
@@ -3340,7 +3340,7 @@ function BookingPagePreview({
             {page.lookBusy !== null && (
               <p className="mt-2 flex items-center gap-1 text-[9px] text-ink-faint">
                 <EyeOff className="h-2.5 w-2.5" aria-hidden />
-                Some open times hidden until the day fills
+                Daily limit on visible times
               </p>
             )}
           </div>
